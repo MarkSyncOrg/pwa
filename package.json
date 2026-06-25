@@ -1,0 +1,29 @@
+{
+  "name": "xbrowsersync-pwa",
+  "version": "0.1.0",
+  "description": "xBrowserSync standalone bookmark PWA. Consumes @xbrowsersync/core for crypto/api/sync; manages its own bookmark store (no browser.bookmarks).",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=11"
+  },
+  "scripts": {
+    "gen:icons": "node scripts/gen-icons.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@xbrowsersync/core": "github:xbrowsersync/core#v0.1.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.0",
+    "typescript": "5.9.3",
+    "vite": "6.0.7",
+    "vite-plugin-pwa": "0.21.1"
+  }
+}
