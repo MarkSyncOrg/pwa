@@ -1,8 +1,8 @@
 name: Deploy PWA to GitHub Pages
 
+# Auto-deploy on push is disabled for now (GitHub Pages needs the repo public on
+# the free plan). Trigger manually once the repo is public or the plan supports it.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
