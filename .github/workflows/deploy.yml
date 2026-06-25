@@ -22,13 +22,17 @@ jobs:
       - uses: actions/checkout@v4
 
       # The @xbrowsersync/core git dependency is pinned to a git+ssh URL. CI has no
-      # SSH key, so rewrite to HTTPS (works for the public core repo, no auth needed).
-      - name: Use HTTPS for github.com git deps
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+      # SSH key, so rewrite to authenticated HTTPS. core is private, so a token with
+      # read access to it is required: set the CORE_CLONE_TOKEN repo secret to a
+      # fine-grained PAT (Contents: read on xbrowsersync/core). If core is later made
+      # public, an anonymous HTTPS rewrite would suffice instead.
+      - name: Use authenticated HTTPS for github.com git deps
+        run: |
+          git config --global url."https://x-access-token:${CORE_CLONE_TOKEN}@github.com/".insteadOf "git@github.com:"
+        env:
+          CORE_CLONE_TOKEN: ${{ secrets.CORE_CLONE_TOKEN }}
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
 
       - uses: actions/setup-node@v4
         with:
