@@ -1,5 +1,4 @@
-# @xbrowsersync/core is a git dependency with a `prepare` build (gen:api + tsc).
-# pnpm 11 requires git-hosted packages that run build scripts to be allowlisted.
+# Build scripts pnpm is allowed to run. @xbrowsersync/core now installs as a
+# prebuilt tarball from GitHub Packages, so only esbuild (vite) needs a build.
 allowBuilds:
-  '@xbrowsersync/core@git+ssh://git@github.com/xbrowsersync/core.git#221a07cec0522c0890b3fd2c53fbe6f37cfe511a': true
   esbuild: true

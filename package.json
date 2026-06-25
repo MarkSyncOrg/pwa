@@ -18,7 +18,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@xbrowsersync/core": "github:xbrowsersync/core#v0.1.1"
+    "@xbrowsersync/core": "0.1.2"
   },
   "devDependencies": {
     "@playwright/test": "1.61.0",

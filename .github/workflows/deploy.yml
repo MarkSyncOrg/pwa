@@ -21,25 +21,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The @xbrowsersync/core git dependency is pinned to a git+ssh URL. CI has no
-      # SSH key, so rewrite to authenticated HTTPS. core is private, so a token with
-      # read access to it is required: set the CORE_CLONE_TOKEN repo secret to a
-      # fine-grained PAT (Contents: read on xbrowsersync/core). If core is later made
-      # public, an anonymous HTTPS rewrite would suffice instead.
-      - name: Use authenticated HTTPS for github.com git deps
-        run: |
-          git config --global url."https://x-access-token:${CORE_CLONE_TOKEN}@github.com/".insteadOf "git@github.com:"
-        env:
-          CORE_CLONE_TOKEN: ${{ secrets.CORE_CLONE_TOKEN }}
-
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@xbrowsersync'
 
-      - run: pnpm install --frozen-lockfile
+      # Reads the private @xbrowsersync/core package from GitHub Packages. The repo's
+      # GITHUB_TOKEN works because the package grants this repo read access (package
+      # settings -> Manage Actions access). --no-frozen-lockfile lets CI resolve the
+      # registry dependency (the committed lockfile cannot be regenerated locally
+      # without a read:packages token).
+      - run: pnpm install --no-frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - run: pnpm gen:icons
 
