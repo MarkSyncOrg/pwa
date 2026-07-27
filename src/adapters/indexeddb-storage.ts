@@ -1,4 +1,4 @@
-import type { StorageArea } from '@xbrowsersync/core';
+import type { StorageArea } from '@marksyncorg/core';
 
 // IndexedDB-backed StorageArea: the PWA's durable key/value store for all sync
 // state (sync info, last-updated, cached tree, settings) and the local bookmark

@@ -1,4 +1,4 @@
-import { SyncEngine, SyncStore } from '@xbrowsersync/core';
+import { SyncEngine, SyncStore } from '@marksyncorg/core';
 import { IndexedDbStorageArea } from './adapters/indexeddb-storage';
 import { LocalBookmarksProvider } from './adapters/local-bookmarks';
 import { App } from './ui/app';
