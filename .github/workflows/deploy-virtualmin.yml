@@ -1,0 +1,112 @@
+name: Deploy PWA to Virtualmin
+
+# Publishes the built PWA to the Virtualmin virtual host serving vv.picone.it.
+# Build once here, ship the static dist/ over SSH — the server runs no build.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+# One deploy at a time, and never cancel a run mid-rsync: a half-applied upload
+# would leave the document root inconsistent.
+concurrency:
+  group: deploy-virtualmin
+  cancel-in-progress: false
+
+env:
+  SSH_HOST: ${{ vars.VIRTUALMIN_HOST }}
+  SSH_USER: ${{ vars.VIRTUALMIN_USER }}
+  SSH_PORT: ${{ vars.VIRTUALMIN_PORT || '22' }}
+  # Document root of the virtual server (Virtualmin default: ~/public_html).
+  DOC_ROOT: ${{ vars.VIRTUALMIN_DOC_ROOT }}
+  # Upload target; the swap into DOC_ROOT happens server-side from here.
+  STAGING_DIR: ${{ vars.VIRTUALMIN_STAGING_DIR || 'deploy-staging/pwa' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: virtualmin
+      url: https://vv.picone.it
+    # Job-level so every pnpm invocation (install, plus the implicit deps
+    # re-check before each script) can read the private @xbrowsersync/core.
+    # After the move to MarkSyncOrg the repo's own GITHUB_TOKEN can no longer
+    # read a package owned by another org, hence the PAT.
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@xbrowsersync'
+
+      # --no-frozen-lockfile: the committed lockfile cannot be regenerated
+      # locally without a read:packages token.
+      - run: pnpm install --no-frozen-lockfile
+
+      - run: pnpm gen:icons
+
+      - run: pnpm build
+
+      - name: Check required settings
+        run: |
+          : "${SSH_HOST:?set repository variable VIRTUALMIN_HOST}"
+          : "${SSH_USER:?set repository variable VIRTUALMIN_USER}"
+          : "${DOC_ROOT:?set repository variable VIRTUALMIN_DOC_ROOT}"
+          test -f dist/index.html || { echo "build produced no dist/index.html"; exit 1; }
+          # Shipped from public/.htaccess: without it deep links 404 and the SW
+          # gets cached indefinitely.
+          test -f dist/.htaccess || { echo "dist/.htaccess missing"; exit 1; }
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VIRTUALMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VIRTUALMIN_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pinned host key: never fall back to StrictHostKeyChecking=no.
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      # Checksum-based (-c): every build rewrites dist/ with fresh mtimes, so
+      # size+time comparison would retransfer everything each run.
+      - name: Upload build to staging
+        run: |
+          rsync -rlptzc --delete \
+            -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT -o BatchMode=yes" \
+            dist/ "$SSH_USER@$SSH_HOST:$STAGING_DIR/"
+
+      # Local disk-to-disk copy on the server: the window in which the document
+      # root is inconsistent is milliseconds, not the length of an upload.
+      # The excludes protect paths Virtualmin/Let's Encrypt own — deleting
+      # .well-known/ would break ACME certificate renewal.
+      - name: Publish staging into the document root
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" -o BatchMode=yes \
+            "$SSH_USER@$SSH_HOST" \
+            "set -eu; \
+             test -f '$STAGING_DIR/index.html'; \
+             mkdir -p '$DOC_ROOT'; \
+             rsync -rlpt --delete \
+               --exclude='/.well-known/' \
+               --exclude='/cgi-bin/' \
+               --exclude='/stats/' \
+               --exclude='/awstats/' \
+               '$STAGING_DIR/' '$DOC_ROOT/'"
+
+      - name: Smoke-check the published site
+        run: |
+          curl -fsS -o /dev/null -w 'index.html %{http_code}\n' https://vv.picone.it/
+          curl -fsS -o /dev/null -w 'sw.js      %{http_code}\n' https://vv.picone.it/sw.js
