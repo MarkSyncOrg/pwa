@@ -1,4 +1,4 @@
-# Build scripts pnpm is allowed to run. @xbrowsersync/core now installs as a
+# Build scripts pnpm is allowed to run. @marksyncorg/core now installs as a
 # prebuilt tarball from GitHub Packages, so only esbuild (vite) needs a build.
 allowBuilds:
   esbuild: true

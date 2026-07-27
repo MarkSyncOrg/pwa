@@ -30,11 +30,12 @@ jobs:
       name: virtualmin
       url: https://vv.picone.it
     # Job-level so every pnpm invocation (install, plus the implicit deps
-    # re-check before each script) can read the private @xbrowsersync/core.
-    # After the move to MarkSyncOrg the repo's own GITHUB_TOKEN can no longer
-    # read a package owned by another org, hence the PAT.
+    # re-check before each script) can read the private @marksyncorg/core.
+    # It lives in this repo's own org now, so the built-in token is enough:
+    # the package must grant this repo read access (package settings ->
+    # Manage Actions access).
     env:
-      NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,10 +46,11 @@ jobs:
           node-version: 22
           cache: pnpm
           registry-url: https://npm.pkg.github.com
-          scope: '@xbrowsersync'
+          scope: '@marksyncorg'
 
-      # --no-frozen-lockfile: the committed lockfile cannot be regenerated
-      # locally without a read:packages token.
+      # --no-frozen-lockfile: the committed lockfile still pins the old
+      # @xbrowsersync/core git dependency and cannot be regenerated locally
+      # without a read:packages token, so CI has to resolve the rename itself.
       - run: pnpm install --no-frozen-lockfile
 
       - run: pnpm gen:icons

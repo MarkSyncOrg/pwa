@@ -5,14 +5,14 @@ No `browser.bookmarks` — the bookmarks live in the PWA's own IndexedDB store, 
 works on iOS/Safari where no host bookmark API exists.
 
 All crypto, API and sync logic comes from
-[`@xbrowsersync/core`](https://github.com/xbrowsersync/core) (consumed as a git
-dependency). This repo is the consumer: IndexedDB/local-store adapters, a plain
-TS + DOM UI, the service worker and the manifest.
+[`@marksyncorg/core`](https://github.com/MarkSyncOrg/core), installed from
+GitHub Packages. This repo is the consumer: IndexedDB/local-store adapters, a
+plain TS + DOM UI, the service worker and the manifest.
 
 ## Architecture
 
 ```
-@xbrowsersync/core        this repo (adapters)
+@marksyncorg/core         this repo (adapters)
   StorageArea       <--   IndexedDbStorageArea   (src/adapters/indexeddb-storage.ts)
   BookmarkProvider  <--   LocalBookmarksProvider (src/adapters/local-bookmarks.ts)
   SyncEngine / crypto / api client / bookmark model
@@ -24,7 +24,7 @@ framework-free view (login, list + search, add form).
 ## Develop
 
 ```sh
-pnpm install        # clones + builds @xbrowsersync/core (git dep)
+pnpm install        # needs a read:packages token for @marksyncorg/core
 pnpm gen:icons      # generate PWA icons into public/icons (gitignored)
 pnpm dev            # vite dev server (SW enabled)
 pnpm build          # typecheck + production build to dist/

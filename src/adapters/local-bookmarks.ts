@@ -5,7 +5,7 @@ import {
   getContainer,
   newBookmark,
   type StorageArea,
-} from '@xbrowsersync/core';
+} from '@marksyncorg/core';
 
 // The PWA's BookmarkProvider. On the extension this seam is `browser.bookmarks`;
 // here there is no host bookmark API (and on iOS none exists at all), so the

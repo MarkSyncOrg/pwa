@@ -1,4 +1,4 @@
-import { type SyncEngine, SyncConflictError } from '@xbrowsersync/core';
+import { type SyncEngine, SyncConflictError } from '@marksyncorg/core';
 import {
   type FlatBookmark,
   flattenBookmarks,

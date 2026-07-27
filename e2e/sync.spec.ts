@@ -6,7 +6,7 @@ import {
   getPasswordHash,
   newBookmark,
   serializeBookmarks,
-} from '@xbrowsersync/core';
+} from '@marksyncorg/core';
 
 // Fixed test credentials. The sync ID doubles as the PBKDF2 salt, so the seed
 // ciphertext below must be derived with exactly this pair.

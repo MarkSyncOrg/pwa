@@ -89,29 +89,28 @@ Repository **secrets**:
 | --- | --- |
 | `VIRTUALMIN_FTP_USER` | the FTP user from step 2 |
 | `VIRTUALMIN_FTP_PASSWORD` | its password |
-| `PACKAGES_READ_TOKEN` | PAT with `read:packages`, see below |
 
 Credentials are written to a `chmod 600` `~/.netrc` on the runner rather than
 passed on the `lftp` command line, where they would show up in the process
 list, and the file is removed even if the upload fails.
 
-### Why `PACKAGES_READ_TOKEN`
+### Access to `@marksyncorg/core`
 
-`@xbrowsersync/core` is a private package published under the **xbrowsersync**
-org, while this repo now lives under **MarkSyncOrg**. A workflow's built-in
-`GITHUB_TOKEN` is scoped to its own repository, so it can no longer read that
-package across orgs — `pnpm install` fails with 401/403 without a PAT.
+No PAT is needed: the private `@marksyncorg/core` package now lives in the same
+org as this repo, so the workflow's built-in `GITHUB_TOKEN` can read it. The
+one prerequisite is on the package side — in its *Package settings → Manage
+Actions access*, `MarkSyncOrg/pwa` must be listed with at least **Read**. If it
+is not, `pnpm install` fails with a 401/403 from `npm.pkg.github.com`.
 
-Two ways out:
+The committed `pnpm-lock.yaml` still pins the pre-migration
+`@xbrowsersync/core` git dependency, which is why every workflow installs with
+`--no-frozen-lockfile`. Regenerating it requires a local `read:packages` token:
 
-- **PAT (what the workflow assumes):** a classic PAT with `read:packages` from
-  an account that can read the package, stored as `PACKAGES_READ_TOKEN`. The
-  workflow falls back to `GITHUB_TOKEN` when the secret is absent, so it keeps
-  working if the package is ever moved or made public.
-- **Move the package to MarkSyncOrg** (publish `@marksync/core`, or transfer
-  the `core` repo) and grant this repo read access under the package's
-  *Manage Actions access*. Then `GITHUB_TOKEN` is enough and the PAT — which
-  needs manual rotation — can be dropped.
+```sh
+NODE_AUTH_TOKEN=<pat> pnpm install --lockfile-only
+```
+
+Commit the result and the flag can be dropped in favour of a frozen install.
 
 ## Deploy environment
 

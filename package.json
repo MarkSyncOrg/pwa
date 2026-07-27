@@ -1,7 +1,7 @@
 {
   "name": "xbrowsersync-pwa",
   "version": "0.1.0",
-  "description": "xBrowserSync standalone bookmark PWA. Consumes @xbrowsersync/core for crypto/api/sync; manages its own bookmark store (no browser.bookmarks).",
+  "description": "xBrowserSync standalone bookmark PWA. Consumes @marksyncorg/core for crypto/api/sync; manages its own bookmark store (no browser.bookmarks).",
   "license": "GPL-3.0-only",
   "type": "module",
   "packageManager": "pnpm@11.9.0",
@@ -18,7 +18,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@xbrowsersync/core": "0.1.2"
+    "@marksyncorg/core": "0.1.2"
   },
   "devDependencies": {
     "@playwright/test": "1.61.0",

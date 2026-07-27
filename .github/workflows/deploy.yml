@@ -20,7 +20,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # Job-level so every pnpm invocation (install and the implicit deps re-check
-    # before each script) can read the private @xbrowsersync/core package.
+    # before each script) can read the private @marksyncorg/core package.
     env:
       NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -33,9 +33,9 @@ jobs:
           node-version: 22
           cache: pnpm
           registry-url: https://npm.pkg.github.com
-          scope: '@xbrowsersync'
+          scope: '@marksyncorg'
 
-      # Reads the private @xbrowsersync/core package from GitHub Packages. The repo's
+      # Reads the private @marksyncorg/core package from GitHub Packages. The repo's
       # GITHUB_TOKEN works because the package grants this repo read access (package
       # settings -> Manage Actions access). --no-frozen-lockfile lets CI resolve the
       # registry dependency (the committed lockfile cannot be regenerated locally
