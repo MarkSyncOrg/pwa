@@ -46,8 +46,8 @@ decrypt/encrypt path without a live backend.
 
 Pushes to `main` publish the build to the Virtualmin virtual host at
 <https://vv.picone.it> via `.github/workflows/deploy-virtualmin.yml` (build on
-Actions, `rsync` the static `dist/` over SSH). Server and GitHub setup:
-[`docs/deploy-virtualmin.md`](docs/deploy-virtualmin.md).
+Actions, upload the static `dist/` over FTPS with `lftp`). Server and GitHub
+setup: [`docs/deploy-virtualmin.md`](docs/deploy-virtualmin.md).
 
 `public/.htaccess` ships with the build and carries the vhost's SPA fallback and
 cache headers, so the server holds no hand-maintained config.

@@ -1,49 +1,75 @@
 # Deploying to Virtualmin (vv.picone.it)
 
 `.github/workflows/deploy-virtualmin.yml` builds the PWA on GitHub Actions and
-ships the static `dist/` to the Virtualmin virtual host over SSH. The server
-runs no build step and needs no toolchain — it only receives files.
+uploads the static `dist/` to the Virtualmin virtual host over **FTPS**. The
+server runs no build step and needs no toolchain — it only receives files.
 
 Flow on every push to `main` (and on manual dispatch):
 
 1. `pnpm install && pnpm gen:icons && pnpm build` → `dist/`
-2. `rsync` `dist/` → `~/deploy-staging/pwa/` on the server (incremental, over SSH)
-3. server-side `rsync` staging → document root (local disk-to-disk, near-atomic)
+2. sanity-check the remote target (see *The delete pass* below)
+3. upload with `lftp` over FTPS, in three phases
 4. `curl` smoke check against `https://vv.picone.it/`
 
-Step 3 exists so the document root is never left half-updated for the duration
-of an upload: the only inconsistent window is a local copy of a few hundred KB.
+## Why FTPS and not plain FTP
+
+The workflow sets `ftp:ssl-force true` and `ftp:ssl-protect-data true`, so
+`lftp` negotiates AUTH TLS and **refuses to continue** if the server will not
+do TLS, rather than silently falling back. Over plain FTP the password and the
+whole upload cross the network in the clear, and a deploy credential that can
+overwrite the document root is worth protecting.
+
+This requires TLS enabled in ProFTPD (Virtualmin: *Servers → ProFTPD → SSL/TLS*,
+or *Features and Plugins → SSL website* for the domain's certificate). The
+certificate must match the hostname in `VIRTUALMIN_FTP_HOST`, since the
+workflow keeps `ssl:verify-certificate true`.
+
+## Upload order
+
+FTP cannot swap a directory into place, so unlike an SSH deploy there is no
+atomic cutover: for the duration of the upload the document root is a mix of
+the old and the new build. The phase order keeps that state loadable:
+
+1. **Hashed assets** — Vite emits content-hashed filenames, so these are purely
+   additive. The live build keeps serving its own files, untouched.
+2. **Entry points** — `index.html`, `sw.js`, `registerSW.js`,
+   `manifest.webmanifest`. This is the moment the site flips to the new build,
+   by which point every asset it references is already there.
+3. **Delete pass** — removes files from previous builds, no longer referenced.
+
+A client loading the site mid-deploy therefore gets either the complete old
+build or the complete new one, not a broken mix. The residual risk is a run
+that dies between phases 1 and 2 (site stays on the old build — harmless) or
+mid-phase 2 (`index.html` new, `sw.js` old, until the next run). If that
+matters more than the convenience of FTP, an SSH deploy removes the window
+entirely by swapping a staging directory in server-side.
+
+## The delete pass
+
+Phase 3 deletes remote files that are not in `dist/`, which makes a wrong
+`VIRTUALMIN_FTP_DIR` destructive. Two safeguards:
+
+- Paths owned by the server are excluded from deletion: `.well-known/` (its
+  removal would break ACME certificate renewal), `cgi-bin/`, `stats/`,
+  `awstats/`.
+- Before uploading, the workflow lists the target and aborts if it contains
+  names that only exist in a Virtualmin *home* directory (`public_html`,
+  `mail`, `logs`, `homes`, `cgi-bin`, `fcgi-bin`, `.ssh`) — i.e. if the path
+  points one level too high.
 
 ## Server setup (once)
 
 1. **Virtual server.** Create `vv.picone.it` in Virtualmin (own domain or
-   sub-server) with SSL enabled. Note the document root — usually
-   `/home/<user>/public_html`, or
-   `/home/<parent>/domains/vv.picone.it/public_html` for a sub-server.
+   sub-server) with SSL enabled.
 
-2. **Shell access.** The domain's Unix user needs a real shell: in Virtualmin,
-   *Edit Users → the domain owner → Shell = `/bin/bash`* (not `/bin/false`). If
-   the account is jailed (Jailkit), make sure `rsync` is available inside the
-   jail — Virtualmin's *System Settings → Jailkit* command list.
+2. **FTP user.** Prefer a dedicated user over the domain owner: Virtualmin
+   *Edit Users → Add a website FTP access user*, with its home set to
+   `public_html`. Chrooted there, the credential cannot reach `mail/`, `logs/`
+   or the rest of the account even if it leaks — and `VIRTUALMIN_FTP_DIR`
+   becomes `.`. Using the domain owner instead works too; then the directory is
+   `public_html`.
 
-3. **Deploy key.** Generate a dedicated keypair (locally, not on the server):
-
-   ```sh
-   ssh-keygen -t ed25519 -f pwa-deploy -C 'github-actions pwa deploy' -N ''
-   ```
-
-   Append the public key to the domain user's `~/.ssh/authorized_keys`, with
-   the capabilities the deploy does not need switched off:
-
-   ```
-   no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA... github-actions pwa deploy
-   ```
-
-   ```sh
-   chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
-   ```
-
-4. **Apache.** Nothing to configure by hand: `public/.htaccess` is copied into
+3. **Apache.** Nothing to configure by hand: `public/.htaccess` is copied into
    the build and deployed with it (SPA fallback, cache headers). It requires
    `AllowOverride All` on the document root — Virtualmin's default for a
    virtual server. `mod_rewrite` and `mod_headers` must be enabled.
@@ -54,23 +80,20 @@ Repository **variables** (Settings → Secrets and variables → Actions → Var
 
 | Variable | Example | Notes |
 | --- | --- | --- |
-| `VIRTUALMIN_HOST` | `vv.picone.it` | SSH host |
-| `VIRTUALMIN_USER` | `vv` | the domain's Unix user |
-| `VIRTUALMIN_DOC_ROOT` | `/home/vv/public_html` | absolute path |
-| `VIRTUALMIN_PORT` | `22` | optional, defaults to `22` |
-| `VIRTUALMIN_STAGING_DIR` | `deploy-staging/pwa` | optional, relative to `$HOME` |
+| `VIRTUALMIN_FTP_HOST` | `vv.picone.it` | must match the FTPS certificate |
+| `VIRTUALMIN_FTP_DIR` | `public_html` | document root as the FTP user sees it; `.` for a user chrooted to it. Optional, defaults to `public_html` |
 
 Repository **secrets**:
 
-| Secret | How to get it |
+| Secret | Notes |
 | --- | --- |
-| `VIRTUALMIN_SSH_KEY` | contents of the private `pwa-deploy` file |
-| `VIRTUALMIN_KNOWN_HOSTS` | `ssh-keyscan -p 22 vv.picone.it` |
+| `VIRTUALMIN_FTP_USER` | the FTP user from step 2 |
+| `VIRTUALMIN_FTP_PASSWORD` | its password |
 | `PACKAGES_READ_TOKEN` | PAT with `read:packages`, see below |
 
-`VIRTUALMIN_KNOWN_HOSTS` pins the server's host key; the workflow deliberately
-does not use `StrictHostKeyChecking=no`. Re-run `ssh-keyscan` and update the
-secret if the server is ever rebuilt.
+Credentials are written to a `chmod 600` `~/.netrc` on the runner rather than
+passed on the `lftp` command line, where they would show up in the process
+list, and the file is removed even if the upload fails.
 
 ### Why `PACKAGES_READ_TOKEN`
 
@@ -98,13 +121,17 @@ Environments → virtualmin) if pushes to `main` should not publish unattended.
 
 ## Troubleshooting
 
-- **`Permission denied (publickey)`** — the key is not in `authorized_keys`, or
-  `~/.ssh` permissions are wrong (`700` / `600`), or the user's shell is
-  `/bin/false`.
-- **`Host key verification failed`** — `VIRTUALMIN_KNOWN_HOSTS` is stale; re-run
-  `ssh-keyscan`.
-- **`rsync: command not found`** — install `rsync` on the server, or add it to
-  the Jailkit command list if the account is jailed.
+- **`Fatal error: SSL not available`** / connection closed at login — TLS is not
+  enabled in ProFTPD. The workflow will not fall back to plaintext by design.
+- **`Certificate verification: ... certificate common name doesn't match`** —
+  `VIRTUALMIN_FTP_HOST` is not a name on the server's certificate. Use the
+  hostname the certificate was issued for.
+- **`530 Login incorrect`** — wrong credentials, or the FTP user is disabled in
+  Virtualmin.
+- **Deploy aborts with "looks like the FTP home"** — `VIRTUALMIN_FTP_DIR` points
+  at the account home. Set it to `public_html`, or to `.` for a chrooted user.
+- **Hangs during transfer** — the runner needs passive mode (already set) and
+  the server's passive port range must be open in the firewall.
 - **Deep links 404** — `AllowOverride` is not `All` for the vhost, or
   `mod_rewrite` is off, so `.htaccess` is ignored.
 - **Clients stuck on an old build** — check `Cache-Control` on `/sw.js` and

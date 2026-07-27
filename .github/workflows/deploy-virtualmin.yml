@@ -1,7 +1,7 @@
 name: Deploy PWA to Virtualmin
 
 # Publishes the built PWA to the Virtualmin virtual host serving vv.picone.it.
-# Build once here, ship the static dist/ over SSH — the server runs no build.
+# Build once here, upload the static dist/ over FTPS — the server runs no build.
 on:
   push:
     branches: [main]
@@ -11,20 +11,17 @@ permissions:
   contents: read
   packages: read
 
-# One deploy at a time, and never cancel a run mid-rsync: a half-applied upload
-# would leave the document root inconsistent.
+# One deploy at a time, and never cancel a run mid-upload: FTP has no atomic
+# swap, so an interrupted run leaves the document root half-updated.
 concurrency:
   group: deploy-virtualmin
   cancel-in-progress: false
 
 env:
-  SSH_HOST: ${{ vars.VIRTUALMIN_HOST }}
-  SSH_USER: ${{ vars.VIRTUALMIN_USER }}
-  SSH_PORT: ${{ vars.VIRTUALMIN_PORT || '22' }}
-  # Document root of the virtual server (Virtualmin default: ~/public_html).
-  DOC_ROOT: ${{ vars.VIRTUALMIN_DOC_ROOT }}
-  # Upload target; the swap into DOC_ROOT happens server-side from here.
-  STAGING_DIR: ${{ vars.VIRTUALMIN_STAGING_DIR || 'deploy-staging/pwa' }}
+  FTP_HOST: ${{ vars.VIRTUALMIN_FTP_HOST }}
+  # Document root as seen by the FTP user. Virtualmin chroots the domain owner
+  # to its home, so this is normally the relative path 'public_html'.
+  FTP_DIR: ${{ vars.VIRTUALMIN_FTP_DIR || 'public_html' }}
 
 jobs:
   deploy:
@@ -60,51 +57,108 @@ jobs:
 
       - name: Check required settings
         run: |
-          : "${SSH_HOST:?set repository variable VIRTUALMIN_HOST}"
-          : "${SSH_USER:?set repository variable VIRTUALMIN_USER}"
-          : "${DOC_ROOT:?set repository variable VIRTUALMIN_DOC_ROOT}"
+          : "${FTP_HOST:?set repository variable VIRTUALMIN_FTP_HOST}"
           test -f dist/index.html || { echo "build produced no dist/index.html"; exit 1; }
           # Shipped from public/.htaccess: without it deep links 404 and the SW
           # gets cached indefinitely.
           test -f dist/.htaccess || { echo "dist/.htaccess missing"; exit 1; }
 
-      - name: Configure SSH
+      - name: Install lftp
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+
+      # .netrc rather than credentials on the lftp command line, which would be
+      # readable in the process list.
+      - name: Configure FTP credentials
         env:
-          SSH_KEY: ${{ secrets.VIRTUALMIN_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.VIRTUALMIN_KNOWN_HOSTS }}
+          FTP_USER: ${{ secrets.VIRTUALMIN_FTP_USER }}
+          FTP_PASSWORD: ${{ secrets.VIRTUALMIN_FTP_PASSWORD }}
         run: |
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          # Pinned host key: never fall back to StrictHostKeyChecking=no.
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
+          : "${FTP_USER:?set secret VIRTUALMIN_FTP_USER}"
+          : "${FTP_PASSWORD:?set secret VIRTUALMIN_FTP_PASSWORD}"
+          umask 077
+          printf 'machine %s login %s password %s\n' \
+            "$FTP_HOST" "$FTP_USER" "$FTP_PASSWORD" > ~/.netrc
+          chmod 600 ~/.netrc
 
-      # Checksum-based (-c): every build rewrites dist/ with fresh mtimes, so
-      # size+time comparison would retransfer everything each run.
-      - name: Upload build to staging
+      # The upload ends with a --delete pass, so a mistyped VIRTUALMIN_FTP_DIR
+      # pointing at the FTP user's home instead of the document root would wipe
+      # the account. Check what is actually there rather than trusting the path:
+      # these names only ever appear in a Virtualmin home directory.
+      - name: Verify the FTP target is the document root
         run: |
-          rsync -rlptzc --delete \
-            -e "ssh -i ~/.ssh/deploy_key -p $SSH_PORT -o BatchMode=yes" \
-            dist/ "$SSH_USER@$SSH_HOST:$STAGING_DIR/"
+          set -euo pipefail
+          # A missing directory is fine — the first deploy creates it.
+          listing=$(lftp -e "set ftp:passive-mode true; set ftp:ssl-force true; \
+            set ftp:ssl-protect-data true; set ftp:list-options -a; \
+            cls -1 '$FTP_DIR/'; bye" "$FTP_HOST" 2>/dev/null || true)
+          if printf '%s\n' "$listing" | sed 's#/$##' \
+              | grep -qxE 'public_html|mail|logs|homes|cgi-bin|fcgi-bin|\.ssh'; then
+            echo "'$FTP_DIR' looks like the FTP home, not a document root:"
+            printf '%s\n' "$listing"
+            echo "Point VIRTUALMIN_FTP_DIR at public_html (or use an FTP user chrooted to it)."
+            exit 1
+          fi
 
-      # Local disk-to-disk copy on the server: the window in which the document
-      # root is inconsistent is milliseconds, not the length of an upload.
-      # The excludes protect paths Virtualmin/Let's Encrypt own — deleting
-      # .well-known/ would break ACME certificate renewal.
-      - name: Publish staging into the document root
+      # FTP cannot swap a directory into place, so the document root is briefly
+      # mixed old/new. The upload order keeps that state loadable:
+      #
+      #   1. hashed assets — new filenames, purely additive, the live build
+      #      keeps serving its own files untouched;
+      #   2. entry points  — index.html and sw.js, which is the moment the site
+      #      flips to the new build, by then complete;
+      #   3. delete pass   — stale files from previous builds, no longer
+      #      referenced by anything.
+      #
+      # ssl-force refuses to fall back to plaintext: with plain FTP the password
+      # and the whole upload cross the network in the clear.
+      - name: Upload build over FTPS
         run: |
-          ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" -o BatchMode=yes \
-            "$SSH_USER@$SSH_HOST" \
-            "set -eu; \
-             test -f '$STAGING_DIR/index.html'; \
-             mkdir -p '$DOC_ROOT'; \
-             rsync -rlpt --delete \
-               --exclude='/.well-known/' \
-               --exclude='/cgi-bin/' \
-               --exclude='/stats/' \
-               --exclude='/awstats/' \
-               '$STAGING_DIR/' '$DOC_ROOT/'"
+          set -euo pipefail
+
+          entrypoints='index.html sw.js registerSW.js manifest.webmanifest'
+
+          # Phase 2 uploads only the entry points the build actually emitted.
+          put_entrypoints=''
+          exclude_entrypoints=''
+          for f in $entrypoints; do
+            exclude_entrypoints="$exclude_entrypoints --exclude '^$f\$'"
+            if [ -f "dist/$f" ]; then
+              put_entrypoints="$put_entrypoints put -O '$FTP_DIR' 'dist/$f';"
+            fi
+          done
+
+          # Paths owned by Virtualmin and Let's Encrypt: they exist only on the
+          # server, so the delete pass must not touch them. Removing
+          # .well-known/ would break ACME certificate renewal.
+          keep="--exclude '^\.well-known/' --exclude '^cgi-bin/' --exclude '^stats/' --exclude '^awstats/'"
+
+          lftp <<LFTP
+          set cmd:fail-exit true
+          set ftp:passive-mode true
+          set ftp:ssl-force true
+          set ftp:ssl-protect-data true
+          set ssl:verify-certificate true
+          # Without -a the server omits dotfiles from LIST, so .htaccess would
+          # never be uploaded and the delete pass would misjudge the remote side.
+          set ftp:list-options -a
+          set net:max-retries 3
+          set net:timeout 20
+          set mirror:parallel-transfer-count 4
+          open "$FTP_HOST"
+
+          mirror -R --no-perms --verbose $keep $exclude_entrypoints dist/ "$FTP_DIR"
+          $put_entrypoints
+          # --only-newer: everything was just uploaded, so the remote copies are
+          # newer than the local build and nothing is sent twice. This pass is
+          # here for --delete alone.
+          mirror -R --no-perms --delete --only-newer --verbose $keep dist/ "$FTP_DIR"
+
+          bye
+          LFTP
+
+      - name: Clear credentials
+        if: always()
+        run: rm -f ~/.netrc
 
       - name: Smoke-check the published site
         run: |
