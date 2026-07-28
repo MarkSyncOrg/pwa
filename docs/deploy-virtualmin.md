@@ -102,9 +102,10 @@ one prerequisite is on the package side — in its *Package settings → Manage
 Actions access*, `MarkSyncOrg/pwa` must be listed with at least **Read**. If it
 is not, `pnpm install` fails with a 401/403 from `npm.pkg.github.com`.
 
-The committed `pnpm-lock.yaml` still pins the pre-migration
-`@xbrowsersync/core` git dependency, which is why every workflow installs with
-`--no-frozen-lockfile`. Regenerating it requires a local `read:packages` token:
+The committed `pnpm-lock.yaml` resolves `@marksyncorg/core` from GitHub
+Packages; workflows still install with `--no-frozen-lockfile` so a lockfile
+drift cannot break the deploy. Regenerating it locally needs a token that can
+read packages:
 
 ```sh
 NODE_AUTH_TOKEN=<pat> pnpm install --lockfile-only

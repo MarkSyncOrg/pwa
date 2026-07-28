@@ -7,7 +7,7 @@ declare global {
   interface Window {
     // Share hook: invoked by an iOS Shortcut opening the PWA, or by the Plan B
     // native Share Extension. Adds a bookmark to the local store and pushes it.
-    xbsReceiveSharedUrl: (url: string, title?: string) => Promise<void>;
+    marksyncReceiveSharedUrl: (url: string, title?: string) => Promise<void>;
   }
 }
 
@@ -39,6 +39,6 @@ if (!root) {
 }
 const app = new App(root, engine, provider);
 
-window.xbsReceiveSharedUrl = (url, title) => app.receiveSharedUrl(url, title);
+window.marksyncReceiveSharedUrl = (url, title) => app.receiveSharedUrl(url, title);
 
 void app.start(readSharedFromUrl());

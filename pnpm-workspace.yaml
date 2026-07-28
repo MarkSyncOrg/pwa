@@ -2,3 +2,5 @@
 # prebuilt tarball from GitHub Packages, so only esbuild (vite) needs a build.
 allowBuilds:
   esbuild: true
+minimumReleaseAgeExclude:
+  - '@marksyncorg/core@0.1.2'

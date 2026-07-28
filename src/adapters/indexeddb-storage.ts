@@ -4,7 +4,7 @@ import type { StorageArea } from '@marksyncorg/core';
 // state (sync info, last-updated, cached tree, settings) and the local bookmark
 // tree. A thin wrapper over a single object store — no ORM, no schema migrations.
 
-const DB_NAME = 'xbrowsersync';
+const DB_NAME = 'marksync';
 const STORE = 'kv';
 const DB_VERSION = 1;
 

@@ -1,6 +1,7 @@
-# xBrowserSync PWA
+# MarkSync PWA
 
-Standalone xBrowserSync bookmark manager as an installable, offline-capable PWA.
+Standalone bookmark manager (xBrowserSync-compatible) as an installable,
+offline-capable PWA.
 No `browser.bookmarks` — the bookmarks live in the PWA's own IndexedDB store, so it
 works on iOS/Safari where no host bookmark API exists.
 
@@ -39,7 +40,7 @@ decrypt/encrypt path without a live backend.
 ## Share hooks
 
 - **Android:** `share_target` in the manifest (works for installed PWAs).
-- **iOS / Shortcuts / Plan B native:** `window.xbsReceiveSharedUrl(url, title?)`
+- **iOS / Shortcuts / Plan B native:** `window.marksyncReceiveSharedUrl(url, title?)`
   and the `?shareUrl=…&shareTitle=…` query param, both handled in `src/main.ts`.
 
 ## Deploy
