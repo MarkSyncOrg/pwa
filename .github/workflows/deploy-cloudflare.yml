@@ -1,0 +1,87 @@
+name: Deploy PWA to Cloudflare Pages
+
+# Builds the PWA on GitHub Actions and uploads dist/ to Cloudflare Pages with
+# wrangler (Direct Upload). Building here rather than letting Cloudflare's Git
+# integration build means the private @marksyncorg/core is read with the
+# workflow's own GITHUB_TOKEN — no GitHub PAT has to be stored at Cloudflare.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+# Pages deployments are atomic and immutable, so a run that a newer push has
+# already superseded is safe to cancel.
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: cloudflare-pages
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    # Job-level so every pnpm invocation (install, plus the implicit deps
+    # re-check before each script) can read the private @marksyncorg/core.
+    # It lives in this repo's own org, so the built-in token is enough: the
+    # package must grant this repo read access (package settings ->
+    # Manage Actions access).
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@marksyncorg'
+
+      # --no-frozen-lockfile: the committed lockfile still pins the old
+      # @xbrowsersync/core git dependency and cannot be regenerated locally
+      # without a read:packages token, so CI has to resolve the rename itself.
+      - run: pnpm install --no-frozen-lockfile
+
+      - run: pnpm gen:icons
+
+      - run: pnpm build
+
+      - name: Check build output
+        run: |
+          test -f dist/index.html || { echo "build produced no dist/index.html"; exit 1; }
+          # Shipped from public/. Without _redirects a deep link 404s instead of
+          # reaching the app shell; without _headers the service worker gets
+          # cached and clients stay pinned to an old build.
+          test -f dist/_redirects || { echo "dist/_redirects missing"; exit 1; }
+          test -f dist/_headers || { echo "dist/_headers missing"; exit 1; }
+
+      # --branch decides production vs preview: Cloudflare treats a deploy whose
+      # branch matches the project's production branch as production, anything
+      # else as a preview on its own URL.
+      - name: Deploy to Cloudflare Pages
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages deploy dist
+            --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-pwa' }}
+            --branch=${{ github.ref_name }}
+
+      # Checks the URL this run actually produced, so no hostname is hardcoded
+      # in the repo.
+      - name: Smoke-check the deployment
+        env:
+          URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          test -n "$URL" || { echo "wrangler returned no deployment URL"; exit 1; }
+          curl -fsS -o /dev/null -w 'index.html %{http_code}\n' "$URL/"
+          curl -fsS -o /dev/null -w 'sw.js      %{http_code}\n' "$URL/sw.js"
