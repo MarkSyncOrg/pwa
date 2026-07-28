@@ -1,8 +1,11 @@
 import { type SyncEngine, SyncConflictError } from '@marksyncorg/core';
 import {
+  buildBookmarkTree,
   type FlatBookmark,
   flattenBookmarks,
   type LocalBookmarksProvider,
+  type TreeFolder,
+  type TreeNode,
 } from '../adapters/local-bookmarks';
 import './styles.css';
 
@@ -25,9 +28,47 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+// Brand mark for the app header. Served from public/, so it is precached with
+// the shell and shows offline; the on-dark variant matches the dark UI.
+function brandMark(): HTMLElement {
+  return el('img', {
+    class: 'mark',
+    src: '/brand/marksync-mark.svg',
+    alt: '',
+    width: '20',
+    height: '24',
+  });
+}
+
+// Long URLs are truncated to one line by CSS; dropping the scheme and any
+// trailing slash first spends that line on the part that identifies the page.
+function prettyUrl(url: string): string {
+  return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
+
+/** One bookmark row. Search results also carry the folder path they came from. */
+function bookmarkItem(b: FlatBookmark, showPath: boolean): HTMLElement {
+  const item = el('li', { class: 'bookmark', 'data-testid': 'bookmarkItem' });
+  if (showPath && b.path.length) {
+    item.append(el('div', { class: 'crumb' }, b.path.join(' / ')));
+  }
+  item.append(
+    el('a', { href: b.url, target: '_blank', rel: 'noopener noreferrer', title: b.url }, b.title),
+    el('div', { class: 'url', title: b.url }, prettyUrl(b.url)),
+  );
+  if (b.tags?.length) item.append(el('div', { class: 'tags' }, b.tags.join(', ')));
+  return item;
+}
+
 export class App {
   private root: HTMLElement;
   private bookmarks: FlatBookmark[] = [];
+  private tree: TreeNode[] = [];
+  // Expansion state, kept by folder id so it survives a re-render after an add
+  // or a sync. Top-level folders (the containers) start open, everything below
+  // starts closed, so only a deliberate toggle is remembered either way.
+  private openFolders = new Set<string>();
+  private closedFolders = new Set<string>();
   private query = '';
   private pendingShare: { url: string; title?: string } | undefined;
   // Live references to the results region, so adds/syncs can refresh just the
@@ -105,8 +146,8 @@ export class App {
     });
 
     this.root.append(
-      el('header', { class: 'bar' }, el('h1', {}, 'MarkSync')),
-      el('div', { class: 'card' }, el('h2', { style: 'margin-top:0;font-size:16px' }, 'Log in to an existing sync'), form),
+      el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync')),
+      el('div', { class: 'card' }, el('h2', {}, 'Log in to an existing sync'), form),
     );
   }
 
@@ -142,8 +183,14 @@ export class App {
   }
 
   private async loadAndRenderList(): Promise<void> {
-    this.bookmarks = flattenBookmarks(await this.provider.getBookmarks());
+    await this.loadBookmarks();
     this.renderList();
+  }
+
+  private async loadBookmarks(): Promise<void> {
+    const stored = await this.provider.getBookmarks();
+    this.bookmarks = flattenBookmarks(stored);
+    this.tree = buildBookmarkTree(stored);
   }
 
   private renderList(): void {
@@ -187,7 +234,7 @@ export class App {
     this.listEl = listEl;
 
     this.root.append(
-      el('header', { class: 'bar' }, el('h1', {}, 'MarkSync'), status, syncBtn, logoutBtn),
+      el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync'), status, syncBtn, logoutBtn),
       addForm,
       el('div', { class: 'card' }, el('label', {}, 'Search'), search, countEl, listEl),
     );
@@ -196,7 +243,7 @@ export class App {
 
   /** Reloads bookmarks from the store and refreshes only the results region. */
   private async refreshResults(): Promise<void> {
-    this.bookmarks = flattenBookmarks(await this.provider.getBookmarks());
+    await this.loadBookmarks();
     if (this.listEl && this.countEl) {
       this.renderResults(this.listEl, this.countEl);
     } else {
@@ -204,27 +251,68 @@ export class App {
     }
   }
 
+  /**
+   * Two modes in one list element: the folder tree when browsing, a flat list
+   * of matches when searching. A tree filtered down to a handful of hits hides
+   * more than it explains, so search drops the hierarchy and shows the path of
+   * each hit as a breadcrumb instead.
+   */
   private renderResults(listEl: HTMLElement, countEl: HTMLElement): void {
     const q = this.query.trim().toLowerCase();
-    const matches = q
-      ? this.bookmarks.filter((b) =>
-          [b.title, b.url, ...(b.tags ?? [])].some((s) => s?.toLowerCase().includes(q)),
-        )
-      : this.bookmarks;
-    countEl.textContent = q ? `${matches.length} of ${this.bookmarks.length} match "${this.query}"` : '';
     listEl.replaceChildren();
-    if (matches.length === 0) {
-      listEl.append(el('li', { class: 'empty' }, q ? 'No matches.' : 'No bookmarks yet.'));
+
+    if (!q) {
+      countEl.textContent = '';
+      listEl.className = 'tree';
+      if (this.bookmarks.length === 0) {
+        listEl.append(el('li', { class: 'empty' }, 'No bookmarks yet.'));
+        return;
+      }
+      listEl.append(...this.tree.map((node) => this.renderTreeNode(node, 0)));
       return;
     }
-    for (const b of matches) {
-      const item = el('li', { 'data-testid': 'bookmarkItem' },
-        el('a', { href: b.url, target: '_blank', rel: 'noopener noreferrer' }, b.title),
-        el('div', { class: 'url' }, b.url),
-      );
-      if (b.tags?.length) item.append(el('div', { class: 'tags' }, b.tags.join(', ')));
-      listEl.append(item);
+
+    const matches = this.bookmarks.filter((b) =>
+      [b.title, b.url, ...(b.tags ?? [])].some((s) => s?.toLowerCase().includes(q)),
+    );
+    countEl.textContent = `${matches.length} of ${this.bookmarks.length} match "${this.query}"`;
+    listEl.className = 'bookmarks';
+    if (matches.length === 0) {
+      listEl.append(el('li', { class: 'empty' }, 'No matches.'));
+      return;
     }
+    listEl.append(...matches.map((b) => bookmarkItem(b, true)));
+  }
+
+  private renderTreeNode(node: TreeNode, depth: number): HTMLElement {
+    if (node.kind === 'bookmark') return bookmarkItem(node, false);
+    return this.renderFolder(node, depth);
+  }
+
+  private renderFolder(folder: TreeFolder, depth: number): HTMLElement {
+    const open = depth === 0 ? !this.closedFolders.has(folder.id) : this.openFolders.has(folder.id);
+    const summary = el(
+      'summary',
+      { 'data-testid': 'folderToggle' },
+      el('span', { class: 'twist', 'aria-hidden': 'true' }, '+'),
+      el('span', { class: 'name' }, folder.title),
+      el('span', { class: 'n' }, String(folder.count)),
+    );
+    const details = el('details', open ? { open: '' } : {}, summary);
+    const children = folder.children.length
+      ? folder.children.map((child) => this.renderTreeNode(child, depth + 1))
+      : [el('li', { class: 'empty' }, 'Empty folder.')];
+    details.append(el('ul', { class: 'tree' }, ...children));
+    details.addEventListener('toggle', () => {
+      if (details.open) {
+        this.openFolders.add(folder.id);
+        this.closedFolders.delete(folder.id);
+      } else {
+        this.closedFolders.add(folder.id);
+        this.openFolders.delete(folder.id);
+      }
+    });
+    return el('li', { class: 'folder', 'data-testid': 'folderItem' }, details);
   }
 
   private async onAdd(

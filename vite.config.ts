@@ -7,13 +7,19 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icons/apple-touch-icon.png'],
+      includeAssets: [
+        'icons/apple-touch-icon.png',
+        'icons/favicon-32.png',
+        'brand/marksync-mark.svg',
+      ],
       manifest: {
         name: 'MarkSync',
         short_name: 'MarkSync',
         description: 'Standalone MarkSync bookmark manager.',
-        theme_color: '#4f46e5',
-        background_color: '#ffffff',
+        // Matches the flat background of the brand icons, so the install splash
+        // and the Android toolbar read as one surface with the app icon.
+        theme_color: '#0e0e0b',
+        background_color: '#0e0e0b',
         display: 'standalone',
         start_url: '/',
         scope: '/',
