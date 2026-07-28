@@ -7,6 +7,11 @@ name: Deploy PWA to Cloudflare Pages
 on:
   push:
     branches: [main]
+  # Pull requests get a preview deployment on their own URL, which doubles as
+  # the build check for the PR: nothing reaches production from here, since
+  # Cloudflare only promotes a deploy whose branch is the production branch.
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,9 +19,10 @@ permissions:
   packages: read
 
 # Pages deployments are atomic and immutable, so a run that a newer push has
-# already superseded is safe to cancel.
+# already superseded is safe to cancel. Keyed by ref so a PR preview never
+# cancels a production deploy.
 concurrency:
-  group: deploy-cloudflare
+  group: deploy-cloudflare-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -64,7 +70,8 @@ jobs:
 
       # --branch decides production vs preview: Cloudflare treats a deploy whose
       # branch matches the project's production branch as production, anything
-      # else as a preview on its own URL.
+      # else as a preview on its own URL. head_ref is the source branch on a
+      # pull_request event, where ref_name would be the useless '<n>/merge'.
       - name: Deploy to Cloudflare Pages
         id: deploy
         uses: cloudflare/wrangler-action@v3
@@ -74,7 +81,7 @@ jobs:
           command: >-
             pages deploy dist
             --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-pwa' }}
-            --branch=${{ github.ref_name }}
+            --branch=${{ github.head_ref || github.ref_name }}
 
       # Checks the URL this run actually produced, so no hostname is hardcoded
       # in the repo.
