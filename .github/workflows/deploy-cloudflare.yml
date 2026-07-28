@@ -96,6 +96,19 @@ jobs:
           url=$(grep -oE 'https://[A-Za-z0-9.-]+\.pages\.dev' deploy.log | tail -1 || true)
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
+      # wrangler's "project not found" error does not say what does exist, and
+      # the project name is the one setting this workflow cannot verify ahead of
+      # time. Listing on failure turns it into a self-explaining error.
+      - name: List available Pages projects
+        if: failure() && steps.deploy.outcome == 'failure'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Deploy targeted project '${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-pwa' }}'."
+          echo "Projects in this account:"
+          npx --yes wrangler@4 pages project list
+
       # Checks the URL this run actually produced, so no hostname is hardcoded
       # in the repo.
       - name: Smoke-check the deployment
