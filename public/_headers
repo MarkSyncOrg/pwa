@@ -1,0 +1,22 @@
+# Cloudflare Pages response headers. Vite copies this to the root of dist/, and
+# Pages consumes it as edge config rather than serving it as a file.
+
+# Vite emits content-hashed filenames under assets/, so those URLs never change
+# meaning and can be cached indefinitely.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Entry points must be revalidated on every load, otherwise a client keeps
+# booting an old build forever — the service worker above all, since it is what
+# decides when the app updates.
+/
+  Cache-Control: no-cache, must-revalidate
+/index.html
+  Cache-Control: no-cache, must-revalidate
+/sw.js
+  Cache-Control: no-cache, must-revalidate
+/registerSW.js
+  Cache-Control: no-cache, must-revalidate
+/manifest.webmanifest
+  Cache-Control: no-cache, must-revalidate
+  Content-Type: application/manifest+json

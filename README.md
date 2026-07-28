@@ -45,15 +45,14 @@ decrypt/encrypt path without a live backend.
 
 ## Deploy
 
-Pushes to `main` publish the build to the Virtualmin virtual host at
-<https://vv.picone.it> via `.github/workflows/deploy-virtualmin.yml` (build on
-Actions, upload the static `dist/` over FTPS with `lftp`). Server and GitHub
-setup: [`docs/deploy-virtualmin.md`](docs/deploy-virtualmin.md).
+Pushes to `main` publish to Cloudflare Pages via
+`.github/workflows/deploy-cloudflare.yml`: the build runs on Actions and
+`wrangler` uploads `dist/`. Setup:
+[`docs/deploy-cloudflare-pages.md`](docs/deploy-cloudflare-pages.md).
 
-`public/.htaccess` ships with the build and carries the vhost's SPA fallback and
-cache headers, so the server holds no hand-maintained config.
-
-The GitHub Pages workflow (`deploy.yml`) is still present but manual-only.
+`public/_redirects` (SPA fallback) and `public/_headers` (cache control, chiefly
+`no-cache` on the service worker) ship with the build, so the routing and
+caching rules live with the code rather than in the Cloudflare dashboard.
 
 ## Backend
 

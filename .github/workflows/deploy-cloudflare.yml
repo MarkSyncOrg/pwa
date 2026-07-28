@@ -1,0 +1,120 @@
+name: Deploy PWA to Cloudflare Pages
+
+# Builds the PWA on GitHub Actions and uploads dist/ to Cloudflare Pages with
+# wrangler (Direct Upload). Building here rather than letting Cloudflare's Git
+# integration build means the private @marksyncorg/core is read with the
+# workflow's own GITHUB_TOKEN — no GitHub PAT has to be stored at Cloudflare.
+on:
+  push:
+    branches: [main]
+  # Pull requests get a preview deployment on their own URL, which doubles as
+  # the build check for the PR: nothing reaches production from here, since
+  # Cloudflare only promotes a deploy whose branch is the production branch.
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+# Pages deployments are atomic and immutable, so a run that a newer push has
+# already superseded is safe to cancel. Keyed by ref so a PR preview never
+# cancels a production deploy.
+concurrency:
+  group: deploy-cloudflare-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: cloudflare-pages
+      url: ${{ steps.deploy.outputs.url }}
+    # Job-level so every pnpm invocation (install, plus the implicit deps
+    # re-check before each script) can read the private @marksyncorg/core.
+    # It lives in this repo's own org, so the built-in token is enough: the
+    # package must grant this repo read access (package settings ->
+    # Manage Actions access).
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@marksyncorg'
+
+      # --no-frozen-lockfile: the committed lockfile still pins the old
+      # @xbrowsersync/core git dependency and cannot be regenerated locally
+      # without a read:packages token, so CI has to resolve the rename itself.
+      - run: pnpm install --no-frozen-lockfile
+
+      - run: pnpm gen:icons
+
+      - run: pnpm build
+
+      - name: Check build output
+        run: |
+          test -f dist/index.html || { echo "build produced no dist/index.html"; exit 1; }
+          # Shipped from public/. Without _redirects a deep link 404s instead of
+          # reaching the app shell; without _headers the service worker gets
+          # cached and clients stay pinned to an old build.
+          test -f dist/_redirects || { echo "dist/_redirects missing"; exit 1; }
+          test -f dist/_headers || { echo "dist/_headers missing"; exit 1; }
+
+      # Run wrangler through npx rather than cloudflare/wrangler-action: the
+      # action installs wrangler *into this project*, which fails both ways
+      # here. With pnpm the install trips the build-script allowlist in
+      # pnpm-workspace.yaml on workerd; with npm it hits an ERESOLVE peer
+      # conflict against the app's own dependency tree. npx with a pinned spec
+      # resolves into its own cache, so a deploy tool never has to be
+      # reconciled with the app's dependency graph.
+      #
+      # --branch decides production vs preview: Cloudflare treats a deploy whose
+      # branch matches the project's production branch as production, anything
+      # else as a preview on its own URL. head_ref is the source branch on a
+      # pull_request event, where ref_name would be the useless '<n>/merge'.
+      - name: Deploy to Cloudflare Pages
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT: ${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-app' }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 pages deploy dist \
+            --project-name="$PROJECT" --branch="$BRANCH" | tee deploy.log
+          # wrangler prints the deployment URL as the last *.pages.dev it
+          # mentions; the smoke check below fails loudly if it is not found.
+          url=$(grep -oE 'https://[A-Za-z0-9.-]+\.pages\.dev' deploy.log | tail -1 || true)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # wrangler's "project not found" error does not say what does exist, and
+      # the project name is the one setting this workflow cannot verify ahead of
+      # time. Listing on failure turns it into a self-explaining error.
+      - name: List available Pages projects
+        if: failure() && steps.deploy.outcome == 'failure'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Deploy targeted project '${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-app' }}'."
+          echo "Projects in this account:"
+          npx --yes wrangler@4 pages project list
+
+      # Checks the URL this run actually produced, so no hostname is hardcoded
+      # in the repo.
+      - name: Smoke-check the deployment
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          test -n "$URL" || { echo "wrangler returned no deployment URL"; exit 1; }
+          curl -fsS -o /dev/null -w 'index.html %{http_code}\n' "$URL/"
+          curl -fsS -o /dev/null -w 'sw.js      %{http_code}\n' "$URL/sw.js"

@@ -1,0 +1,7 @@
+# Cloudflare Pages routing rules. Vite copies this to the root of dist/, and
+# Pages consumes it as edge config rather than serving it as a file.
+
+# SPA fallback. Static assets are matched first, so this only catches
+# client-side routes: without it a deep link or a reload outside / returns 404
+# before the service worker can answer.
+/*    /index.html   200
