@@ -132,7 +132,7 @@ test('login decrypts and renders, search, add+push, second-session pull, offline
   await ctx1.close();
 });
 
-test('window.xbsReceiveSharedUrl adds and syncs a bookmark', async ({ browser }) => {
+test('window.marksyncReceiveSharedUrl adds and syncs a bookmark', async ({ browser }) => {
   const state: ServerState = {
     blob: await encryptTree(SEEDED),
     lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
@@ -146,7 +146,7 @@ test('window.xbsReceiveSharedUrl adds and syncs a bookmark', async ({ browser })
   await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
 
   await page.evaluate(() =>
-    window.xbsReceiveSharedUrl('https://example.com/shared', 'Shared Link'),
+    window.marksyncReceiveSharedUrl('https://example.com/shared', 'Shared Link'),
   );
 
   await expect(page.getByText('Shared Link')).toBeVisible();

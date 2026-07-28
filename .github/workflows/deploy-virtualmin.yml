@@ -48,9 +48,8 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: '@marksyncorg'
 
-      # --no-frozen-lockfile: the committed lockfile still pins the old
-      # @xbrowsersync/core git dependency and cannot be regenerated locally
-      # without a read:packages token, so CI has to resolve the rename itself.
+      # --no-frozen-lockfile: kept tolerant so CI can still resolve
+      # @marksyncorg/core if the committed lockfile drifts from package.json.
       - run: pnpm install --no-frozen-lockfile
 
       - run: pnpm gen:icons

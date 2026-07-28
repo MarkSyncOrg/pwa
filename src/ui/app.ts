@@ -105,7 +105,7 @@ export class App {
     });
 
     this.root.append(
-      el('header', { class: 'bar' }, el('h1', {}, 'xBrowserSync')),
+      el('header', { class: 'bar' }, el('h1', {}, 'MarkSync')),
       el('div', { class: 'card' }, el('h2', { style: 'margin-top:0;font-size:16px' }, 'Log in to an existing sync'), form),
     );
   }
@@ -187,7 +187,7 @@ export class App {
     this.listEl = listEl;
 
     this.root.append(
-      el('header', { class: 'bar' }, el('h1', {}, 'xBrowserSync'), status, syncBtn, logoutBtn),
+      el('header', { class: 'bar' }, el('h1', {}, 'MarkSync'), status, syncBtn, logoutBtn),
       addForm,
       el('div', { class: 'card' }, el('label', {}, 'Search'), search, countEl, listEl),
     );

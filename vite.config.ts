@@ -9,9 +9,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icons/apple-touch-icon.png'],
       manifest: {
-        name: 'xBrowserSync',
-        short_name: 'xBrowserSync',
-        description: 'Standalone xBrowserSync bookmark manager.',
+        name: 'MarkSync',
+        short_name: 'MarkSync',
+        description: 'Standalone MarkSync bookmark manager.',
         theme_color: '#4f46e5',
         background_color: '#ffffff',
         display: 'standalone',
@@ -46,7 +46,7 @@ export default defineConfig({
             urlPattern: ({ url }) => url.origin === API_ORIGIN,
             handler: 'NetworkFirst',
             options: {
-              cacheName: 'xbs-api',
+              cacheName: 'marksync-api',
               networkTimeoutSeconds: 8,
               expiration: { maxEntries: 50, maxAgeSeconds: 60 * 60 * 24 * 7 },
               cacheableResponse: { statuses: [0, 200] },
