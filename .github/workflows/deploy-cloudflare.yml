@@ -76,6 +76,12 @@ jobs:
         id: deploy
         uses: cloudflare/wrangler-action@v3
         with:
+          # The action installs wrangler on the fly, and left to infer the
+          # package manager it picks pnpm, whose install then fails this repo's
+          # build-script allowlist (pnpm-workspace.yaml) on workerd. npm keeps
+          # wrangler out of the pnpm dependency graph entirely, so the allowlist
+          # stays as tight as it is for the app's own dependencies.
+          packageManager: npm
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: >-
