@@ -10,7 +10,6 @@
     "pnpm": ">=11"
   },
   "scripts": {
-    "gen:icons": "node scripts/gen-icons.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",

@@ -55,8 +55,6 @@ jobs:
       # without a read:packages token, so CI has to resolve the rename itself.
       - run: pnpm install --no-frozen-lockfile
 
-      - run: pnpm gen:icons
-
       - run: pnpm build
 
       - name: Check build output

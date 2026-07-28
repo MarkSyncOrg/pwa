@@ -37,6 +37,12 @@ async function encryptTree(
   return encryptData(serializeBookmarks(tree), hash);
 }
 
+/** Encrypts an arbitrary container tree, for the folder-tree test below. */
+async function encryptCustomTree(tree: ReturnType<typeof newBookmark>[]): Promise<string> {
+  const hash = await getPasswordHash(PASSWORD, SYNC_ID);
+  return encryptData(serializeBookmarks(tree), hash);
+}
+
 /** Installs a stateful mock of the xBrowserSync API on a browser context. */
 async function installApiMock(context: BrowserContext, state: ServerState): Promise<void> {
   await context.route(`${SERVICE_URL}/**`, async (route) => {
@@ -130,6 +136,77 @@ test('login decrypts and renders, search, add+push, second-session pull, offline
   await expect(page1.getByText('Hacker News')).toBeVisible();
 
   await ctx1.close();
+});
+
+// Long enough to overflow the row at any viewport this suite runs at.
+const LONG_URL =
+  'https://caniuse.com/?search=details%20element%20support&utm_source=marksync&utm_medium=e2e&utm_campaign=truncation-check&session=6f2a1c9d4b8e7f30a1c2d3e4f5061728';
+
+test('folders render as an expandable tree; search flattens it with breadcrumbs', async ({
+  browser,
+}) => {
+  // Toolbar
+  //   Dev/            (nested, starts collapsed)
+  //     MDN, Caniuse
+  //   Hacker News     (loose bookmark at container level)
+  const dev = newBookmark('Dev');
+  dev.children = [
+    newBookmark('MDN', 'https://developer.mozilla.org/'),
+    newBookmark('Caniuse', LONG_URL),
+  ];
+  const toolbar = newBookmark(BookmarkContainer.Toolbar);
+  toolbar.children = [dev, newBookmark('Hacker News', 'https://news.ycombinator.com/')];
+
+  const state: ServerState = {
+    blob: await encryptCustomTree([toolbar]),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  // The container is open by default and shows its own total; the nested
+  // folder is closed, so its bookmarks are in the DOM but not visible.
+  const toolbarFolder = page.getByTestId('folderItem').filter({ hasText: 'Toolbar' }).first();
+  await expect(toolbarFolder.getByTestId('folderToggle').first()).toContainText('3');
+  await expect(page.getByRole('link', { name: 'Hacker News' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'MDN' })).toBeHidden();
+
+  // Expanding the nested folder reveals them.
+  await page.getByTestId('folderToggle').filter({ hasText: 'Dev' }).click();
+  await expect(page.getByRole('link', { name: 'MDN' })).toBeVisible();
+
+  // Collapsing the container hides everything under it.
+  await page.getByTestId('folderToggle').filter({ hasText: 'Toolbar' }).click();
+  await expect(page.getByRole('link', { name: 'Hacker News' })).toBeHidden();
+  await page.getByTestId('folderToggle').filter({ hasText: 'Toolbar' }).click();
+
+  // Searching drops the hierarchy and labels each hit with its folder path.
+  await page.getByTestId('search').fill('mdn');
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(1);
+  await expect(page.getByTestId('bookmarkItem')).toContainText('Toolbar / Dev');
+  await expect(page.getByTestId('folderItem')).toHaveCount(0);
+
+  // Clearing it restores the tree with the expansion state from before.
+  await page.getByTestId('search').fill('');
+  await expect(page.getByRole('link', { name: 'MDN' })).toBeVisible();
+
+  // A long URL is truncated to its row rather than wrapping over three lines.
+  const caniuse = page.getByTestId('bookmarkItem').filter({ hasText: 'Caniuse' });
+  const url = caniuse.locator('.url');
+  await expect(url).toHaveAttribute('title', LONG_URL);
+  const { scrollWidth, clientWidth, lines } = await url.evaluate((n) => ({
+    scrollWidth: n.scrollWidth,
+    clientWidth: n.clientWidth,
+    lines: n.getClientRects().length,
+  }));
+  expect(lines).toBe(1);
+  expect(scrollWidth).toBeGreaterThan(clientWidth);
+
+  await ctx.close();
 });
 
 test('window.marksyncReceiveSharedUrl adds and syncs a bookmark', async ({ browser }) => {
