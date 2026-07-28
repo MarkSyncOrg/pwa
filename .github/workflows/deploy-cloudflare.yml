@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: cloudflare-pages
-      url: ${{ steps.deploy.outputs.deployment-url }}
+      url: ${{ steps.deploy.outputs.url }}
     # Job-level so every pnpm invocation (install, plus the implicit deps
     # re-check before each script) can read the private @marksyncorg/core.
     # It lives in this repo's own org, so the built-in token is enough: the
@@ -68,32 +68,39 @@ jobs:
           test -f dist/_redirects || { echo "dist/_redirects missing"; exit 1; }
           test -f dist/_headers || { echo "dist/_headers missing"; exit 1; }
 
+      # Run wrangler through npx rather than cloudflare/wrangler-action: the
+      # action installs wrangler *into this project*, which fails both ways
+      # here. With pnpm the install trips the build-script allowlist in
+      # pnpm-workspace.yaml on workerd; with npm it hits an ERESOLVE peer
+      # conflict against the app's own dependency tree. npx with a pinned spec
+      # resolves into its own cache, so a deploy tool never has to be
+      # reconciled with the app's dependency graph.
+      #
       # --branch decides production vs preview: Cloudflare treats a deploy whose
       # branch matches the project's production branch as production, anything
       # else as a preview on its own URL. head_ref is the source branch on a
       # pull_request event, where ref_name would be the useless '<n>/merge'.
       - name: Deploy to Cloudflare Pages
         id: deploy
-        uses: cloudflare/wrangler-action@v3
-        with:
-          # The action installs wrangler on the fly, and left to infer the
-          # package manager it picks pnpm, whose install then fails this repo's
-          # build-script allowlist (pnpm-workspace.yaml) on workerd. npm keeps
-          # wrangler out of the pnpm dependency graph entirely, so the allowlist
-          # stays as tight as it is for the app's own dependencies.
-          packageManager: npm
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: >-
-            pages deploy dist
-            --project-name=${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-pwa' }}
-            --branch=${{ github.head_ref || github.ref_name }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT: ${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-pwa' }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 pages deploy dist \
+            --project-name="$PROJECT" --branch="$BRANCH" | tee deploy.log
+          # wrangler prints the deployment URL as the last *.pages.dev it
+          # mentions; the smoke check below fails loudly if it is not found.
+          url=$(grep -oE 'https://[A-Za-z0-9.-]+\.pages\.dev' deploy.log | tail -1 || true)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
 
       # Checks the URL this run actually produced, so no hostname is hardcoded
       # in the repo.
       - name: Smoke-check the deployment
         env:
-          URL: ${{ steps.deploy.outputs.deployment-url }}
+          URL: ${{ steps.deploy.outputs.url }}
         run: |
           test -n "$URL" || { echo "wrangler returned no deployment URL"; exit 1; }
           curl -fsS -o /dev/null -w 'index.html %{http_code}\n' "$URL/"
