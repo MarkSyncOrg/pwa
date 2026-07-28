@@ -31,7 +31,7 @@ Create the project as *Direct Upload*.
    Pages → **Direct Upload**), or:
 
    ```sh
-   npx wrangler pages project create marksync-pwa --production-branch=main
+   npx wrangler pages project create marksync-app --production-branch=main
    ```
 
    The name must match `CLOUDFLARE_PROJECT_NAME` below, and the production
@@ -63,7 +63,7 @@ Repository **variables**:
 
 | Variable | Example | Notes |
 | --- | --- | --- |
-| `CLOUDFLARE_PROJECT_NAME` | `marksync-pwa` | optional, defaults to `marksync-pwa` |
+| `CLOUDFLARE_PROJECT_NAME` | `marksync-app` | optional, defaults to `marksync-app` |
 
 ## Static config shipped with the build
 

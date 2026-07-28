@@ -85,7 +85,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          PROJECT: ${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-pwa' }}
+          PROJECT: ${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-app' }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
@@ -105,7 +105,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          echo "Deploy targeted project '${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-pwa' }}'."
+          echo "Deploy targeted project '${{ vars.CLOUDFLARE_PROJECT_NAME || 'marksync-app' }}'."
           echo "Projects in this account:"
           npx --yes wrangler@4 pages project list
 
