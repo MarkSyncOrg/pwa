@@ -2,6 +2,7 @@ import { SyncEngine, SyncStore } from '@marksyncorg/core';
 import { IndexedDbStorageArea } from './adapters/indexeddb-storage';
 import { LocalBookmarksProvider } from './adapters/local-bookmarks';
 import { App } from './ui/app';
+import { lockPageZoom } from './ui/zoom';
 
 declare global {
   interface Window {
@@ -24,6 +25,9 @@ function readSharedFromUrl(): { url: string; title?: string } | undefined {
   history.replaceState(null, '', location.pathname);
   return { url, title: title ?? undefined };
 }
+
+// Before anything renders, so the first pinch on a cold start is already caught.
+lockPageZoom();
 
 const storage = new IndexedDbStorageArea();
 const provider = new LocalBookmarksProvider(storage);

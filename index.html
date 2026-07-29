@@ -2,7 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- The app is a fixed-layout shell, not a zoomable document: it already
+         reflows down to phone widths, so page scaling only ever leaves the user
+         panning a half-offscreen UI. maximum-scale/user-scalable pin it on
+         Android; iOS Safari ignores both, so the gesture lock in src/ui/zoom.ts
+         and the 16px touch inputs in styles.css cover it there. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
     <meta name="theme-color" content="#0e0e0b" />
     <!-- Brand marks live in public/, so these URLs are stable across builds and
          the same files back the manifest icons. -->

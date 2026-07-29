@@ -23,6 +23,16 @@
 
 * { box-sizing: border-box; }
 
+/* The shell is fixed at 1x on touch devices: `pan-x pan-y` leaves scrolling
+   alone but drops pinch- and double-tap-zoom (the latter is the one the
+   viewport meta cannot express), and text-size-adjust stops mobile WebKit from
+   inflating type on rotation, which is the same layout break by another route. */
+html {
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   font: 15px/1.6 var(--sans);
@@ -99,6 +109,15 @@ input:focus {
   outline: 1px solid var(--accent);
   outline-offset: -2px;
   border-color: var(--accent);
+}
+/* iOS Safari zooms the viewport in on focus whenever a field is under 16px, and
+   never zooms back out — the one path to a scaled page that neither the
+   viewport meta nor the gesture lock can block. Touch input therefore gets 16px
+   and pointer devices keep the 15px of the rest of the UI. */
+@media (pointer: coarse) {
+  input[type="text"], input[type="password"], input[type="url"], input[type="search"] {
+    font-size: 16px;
+  }
 }
 
 /* Site CTAs: Archivo 800, lime field, black text, no rounding. Mono is kept
