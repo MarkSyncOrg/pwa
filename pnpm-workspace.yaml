@@ -6,4 +6,4 @@ allowBuilds:
 # (which exists to catch a compromised upstream release) buys nothing and would
 # only stall a deploy behind our own publish.
 minimumReleaseAgeExclude:
-  - '@marksyncorg/core@0.2.0'
+  - '@marksyncorg/core@0.3.0'

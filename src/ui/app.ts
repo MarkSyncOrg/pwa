@@ -65,6 +65,10 @@ function prettyUrl(url: string): string {
  * render-time guard core's SECURITY.md asks for lives here. A `javascript:` or
  * `data:` URL becomes inert text rather than an `<a href>` that would execute in
  * this origin.
+ *
+ * Since core 0.3.0 such an entry also survives a pull rather than being erased by
+ * it, so it is a permanent resident of the list and the row has to say why it
+ * looks different: excluded from the sync, not broken.
  */
 function bookmarkItem(b: FlatBookmark, showPath: boolean): HTMLElement {
   const item = el('li', { class: 'bookmark', 'data-testid': 'bookmarkItem' });
@@ -74,7 +78,15 @@ function bookmarkItem(b: FlatBookmark, showPath: boolean): HTMLElement {
   item.append(
     isSafeBookmarkUrl(b.url)
       ? el('a', { href: b.url, target: '_blank', rel: 'noopener noreferrer', title: b.url }, b.title)
-      : el('span', { class: 'blocked', 'data-testid': 'blockedBookmark', title: b.url }, b.title),
+      : el(
+          'span',
+          {
+            class: 'blocked',
+            'data-testid': 'blockedBookmark',
+            title: `Kept on this device but never synced — ${b.url}`,
+          },
+          b.title,
+        ),
     el('div', { class: 'url', title: b.url }, prettyUrl(b.url)),
   );
   if (b.tags?.length) item.append(el('div', { class: 'tags' }, b.tags.join(', ')));

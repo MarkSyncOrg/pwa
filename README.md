@@ -35,6 +35,10 @@ lands:
   instead of an `<a href>`. The add form and the share hooks reject the same
   schemes up front — core would silently drop them from the uploaded tree, so a
   bookmark accepted here would look saved and never reach another device.
+  Filtering is not deletion: since core 0.3.0 an entry already in the store is
+  put back before the destructive write that applies a pulled tree, so it stays
+  on this device indefinitely without ever being uploaded. That is why the row
+  says so rather than just looking broken.
 - **The storage area holds the decryption key.** `SyncInfo.passwordHash` is the
   AES key, and `IndexedDbStorageArea` is plain IndexedDB — anything with script
   access to this origin can decrypt the whole sync. That is inherited
@@ -75,9 +79,12 @@ pnpm test:e2e       # Playwright: login -> render -> add -> pull -> offline
 
 The e2e suite mocks the xBrowserSync API at the network layer and seeds a sync
 blob encrypted with the real core crypto, so it exercises the genuine
-decrypt/encrypt path without a live backend. Three of its cases pin the URL-scheme
+decrypt/encrypt path without a live backend. Four of its cases pin the URL-scheme
 policy: dropped on the way in from the service, rejected by the add form and the
-share hook, and rendered inert if it is already sitting in the local store.
+share hook, rendered inert if it is already sitting in the local store, and kept
+across a pull that rewrites the whole tree while still being left out of the push
+(the consumer-side regression test for
+[core#3](https://github.com/MarkSyncOrg/core/issues/3)).
 
 ## Brand assets
 

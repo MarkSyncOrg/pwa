@@ -1,6 +1,7 @@
 import { type BrowserContext, expect, type Page, test } from '@playwright/test';
 import {
   BookmarkContainer,
+  decryptData,
   encryptData,
   getContainer,
   getPasswordHash,
@@ -41,6 +42,12 @@ async function encryptTree(
 async function encryptCustomTree(tree: ReturnType<typeof newBookmark>[]): Promise<string> {
   const hash = await getPasswordHash(PASSWORD, SYNC_ID);
   return encryptData(serializeBookmarks(tree), hash);
+}
+
+/** Decrypts a blob the app pushed, so a test can assert on what actually went up. */
+async function decryptTree(blob: string): Promise<string> {
+  const hash = await getPasswordHash(PASSWORD, SYNC_ID);
+  return decryptData(blob, hash);
 }
 
 /** Installs a stateful mock of the xBrowserSync API on a browser context. */
@@ -276,11 +283,44 @@ test('the add form rejects an unsafe URL instead of storing one that will not sy
   await ctx.close();
 });
 
+/**
+ * Appends a node straight into the PWA's IndexedDB store, inside the first container,
+ * bypassing every core code path. Simulates a bookmarklet the user already had — the
+ * one thing the app itself will not create, since the add form rejects the scheme.
+ */
+async function seedLocalBookmark(page: Page, title: string, url: string): Promise<void> {
+  await page.evaluate(
+    async ([title, url]) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const req = indexedDB.open('marksync', 1);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      const tx = db.transaction('kv', 'readwrite');
+      const store = tx.objectStore('kv');
+      const tree = await new Promise<unknown>((resolve, reject) => {
+        const get = store.get('localBookmarks');
+        get.onsuccess = () => resolve(get.result);
+        get.onerror = () => reject(get.error);
+      });
+      const containers = tree as { children?: { title: string; url: string }[] }[];
+      containers[0]!.children!.push({ title: title!, url: url! });
+      await new Promise<void>((resolve, reject) => {
+        const put = store.put(containers, 'localBookmarks');
+        put.onsuccess = () => resolve();
+        put.onerror = () => reject(put.error);
+      });
+    },
+    [title, url],
+  );
+}
+
 test('an unsafe URL already in the local store renders inert, not as a link', async ({
   browser,
 }) => {
-  // Defence in depth for a tree written by a pre-0.2.0 build: the store is not a
-  // trust boundary the library sees, so the guard has to be at the render.
+  // The store is not a trust boundary the library sees, so the guard has to be at
+  // the render — and since 0.3.0 these entries stay put instead of being erased by
+  // the next pull, so this is the steady state, not a transient one.
   const state: ServerState = {
     blob: await encryptTree(SEEDED),
     lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
@@ -293,33 +333,56 @@ test('an unsafe URL already in the local store renders inert, not as a link', as
   await login(page);
   await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
 
-  // Write straight into the PWA's IndexedDB store, bypassing every core code path.
-  await page.evaluate(async (url) => {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const req = indexedDB.open('marksync', 1);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-    const tx = db.transaction('kv', 'readwrite');
-    const store = tx.objectStore('kv');
-    const tree = await new Promise<unknown>((resolve, reject) => {
-      const get = store.get('localBookmarks');
-      get.onsuccess = () => resolve(get.result);
-      get.onerror = () => reject(get.error);
-    });
-    const containers = tree as { children?: { title: string; url: string }[] }[];
-    containers[0]!.children!.push({ title: 'Legacy Pwned', url });
-    await new Promise<void>((resolve, reject) => {
-      const put = store.put(containers, 'localBookmarks');
-      put.onsuccess = () => resolve();
-      put.onerror = () => reject(put.error);
-    });
-  }, UNSAFE_URL);
+  await seedLocalBookmark(page, 'Legacy Pwned', UNSAFE_URL);
 
   await page.reload();
   await expect(page.getByTestId('bookmarkItem')).toHaveCount(3);
   await expect(page.getByRole('link', { name: 'Legacy Pwned' })).toHaveCount(0);
   await expect(page.getByTestId('blockedBookmark')).toHaveText('Legacy Pwned');
+  await ctx.close();
+});
+
+test('a local bookmarklet survives a pull that rewrites the whole tree', async ({ browser }) => {
+  // Regression test for MarkSyncOrg/core#3, from the consumer's side. `setBookmarks` is
+  // a destructive full-tree write and the tree being written is sanitised, so on 0.2.0
+  // the first pull deleted the bookmarklet from the device — the only copy, since the
+  // upload filter had already excluded it. 0.3.0 reinstates it before the write.
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  await seedLocalBookmark(page, 'My bookmarklet', UNSAFE_URL);
+  await page.reload();
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(3);
+
+  // Another device pushes. Sanitising the local tree is symmetric, so the bookmarklet
+  // does not make this device dirty — the sync is a straight pull, which is exactly
+  // the path that used to destroy it.
+  state.blob = await encryptTree([...SEEDED, { title: 'From Elsewhere', url: 'https://example.org/' }]);
+  state.lastUpdated = new Date('2024-06-01T00:00:00.000Z').toISOString();
+  await page.getByTestId('syncButton').click();
+
+  await expect(page.getByRole('link', { name: 'From Elsewhere' })).toBeVisible();
+  await expect(page.getByTestId('blockedBookmark')).toHaveText('My bookmarklet');
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(4);
+
+  // Kept is not the same as synced: the next push still uploads a tree without it.
+  await page.getByTestId('addTitle').fill('Hacker News');
+  await page.getByTestId('addUrl').fill('https://news.ycombinator.com/');
+  await page.getByTestId('addSubmit').click();
+  await expect(page.getByTestId('addMessage')).toHaveText(/synced/i);
+
+  const uploaded = await decryptTree(state.blob);
+  expect(uploaded).toContain('news.ycombinator.com');
+  expect(uploaded).not.toContain('javascript:');
+
   await ctx.close();
 });
 
