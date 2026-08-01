@@ -22,6 +22,34 @@ plain TS + DOM UI, the service worker and the manifest.
 `src/main.ts` wires the adapters into the `SyncEngine`; `src/ui/app.ts` is the
 framework-free view (login, list + search, add form).
 
+## Security responsibilities of this repo
+
+Core sanitises every bookmark tree that crosses a trust boundary — a decrypted
+sync payload, a backup file, the tree it is about to upload. Its `SECURITY.md`
+names three things a consuming app has to handle itself; here is where each one
+lands:
+
+- **Check URLs before rendering.** The list renders from the local IndexedDB
+  store, which core never sees, so `bookmarkItem` in `src/ui/app.ts` runs
+  `isSafeBookmarkUrl` and shows an unsafe entry as inert struck-through text
+  instead of an `<a href>`. The add form and the share hooks reject the same
+  schemes up front — core would silently drop them from the uploaded tree, so a
+  bookmark accepted here would look saved and never reach another device.
+- **The storage area holds the decryption key.** `SyncInfo.passwordHash` is the
+  AES key, and `IndexedDbStorageArea` is plain IndexedDB — anything with script
+  access to this origin can decrypt the whole sync. That is inherited
+  xBrowserSync behaviour and cannot change without breaking compatibility, so
+  treat "device or origin compromised" as "sync compromised".
+- **The service is trusted for freshness, not for history.** A compromised
+  service can replay an older, genuinely valid payload and the client will
+  accept it. Core requires `https` (plain `http` only for loopback), which the
+  login form's service URL now goes through.
+
+Two login-time behaviours come from core and surface as ordinary form errors:
+the service URL must be `https` with no query, fragment or embedded credentials,
+and the sync ID must be 32 lowercase hex characters (checked before the
+250k-iteration key derivation, so a typo fails immediately).
+
 ## List view
 
 Browsing shows the container tree as expandable folders (native `<details>`,
@@ -47,7 +75,9 @@ pnpm test:e2e       # Playwright: login -> render -> add -> pull -> offline
 
 The e2e suite mocks the xBrowserSync API at the network layer and seeds a sync
 blob encrypted with the real core crypto, so it exercises the genuine
-decrypt/encrypt path without a live backend.
+decrypt/encrypt path without a live backend. Three of its cases pin the URL-scheme
+policy: dropped on the way in from the service, rejected by the add form and the
+share hook, and rendered inert if it is already sitting in the local store.
 
 ## Brand assets
 

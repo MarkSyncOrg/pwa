@@ -1,4 +1,4 @@
-import { type SyncEngine, SyncConflictError } from '@marksyncorg/core';
+import { isSafeBookmarkUrl, type SyncEngine, SyncConflictError } from '@marksyncorg/core';
 import {
   buildBookmarkTree,
   type FlatBookmark,
@@ -40,20 +40,41 @@ function brandMark(): HTMLElement {
   });
 }
 
+/**
+ * Rejects a URL the core would refuse to sync. `isSafeBookmarkUrl` also rejects
+ * anything that is not an absolute URL, which is the check the `type="url"` input
+ * gives us for free but the share hooks do not get at all.
+ */
+function assertSafeUrl(url: string): void {
+  if (!isSafeBookmarkUrl(url)) {
+    throw new Error('Only absolute http, https, ftp and mailto links can be saved.');
+  }
+}
+
 // Long URLs are truncated to one line by CSS; dropping the scheme and any
 // trailing slash first spends that line on the part that identifies the page.
 function prettyUrl(url: string): string {
   return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
 
-/** One bookmark row. Search results also carry the folder path they came from. */
+/**
+ * One bookmark row. Search results also carry the folder path they came from.
+ *
+ * The core sanitises every tree crossing a trust boundary, but the list is read
+ * straight from the local store, which is not one of those boundaries — so the
+ * render-time guard core's SECURITY.md asks for lives here. A `javascript:` or
+ * `data:` URL becomes inert text rather than an `<a href>` that would execute in
+ * this origin.
+ */
 function bookmarkItem(b: FlatBookmark, showPath: boolean): HTMLElement {
   const item = el('li', { class: 'bookmark', 'data-testid': 'bookmarkItem' });
   if (showPath && b.path.length) {
     item.append(el('div', { class: 'crumb' }, b.path.join(' / ')));
   }
   item.append(
-    el('a', { href: b.url, target: '_blank', rel: 'noopener noreferrer', title: b.url }, b.title),
+    isSafeBookmarkUrl(b.url)
+      ? el('a', { href: b.url, target: '_blank', rel: 'noopener noreferrer', title: b.url }, b.title)
+      : el('span', { class: 'blocked', 'data-testid': 'blockedBookmark', title: b.url }, b.title),
     el('div', { class: 'url', title: b.url }, prettyUrl(b.url)),
   );
   if (b.tags?.length) item.append(el('div', { class: 'tags' }, b.tags.join(', ')));
@@ -75,6 +96,7 @@ export class App {
   // list without rebuilding (and wiping) the add form and its status message.
   private listEl: HTMLElement | undefined;
   private countEl: HTMLElement | undefined;
+  private addMsgEl: HTMLElement | undefined;
 
   constructor(
     root: HTMLElement,
@@ -91,10 +113,7 @@ export class App {
     this.root.removeAttribute('aria-busy');
     if (status.enabled) {
       await this.loadAndRenderList();
-      if (this.pendingShare) {
-        await this.addBookmark(this.pendingShare.title ?? this.pendingShare.url, this.pendingShare.url);
-        this.pendingShare = undefined;
-      }
+      await this.flushPendingShare();
     } else {
       this.renderLogin();
     }
@@ -102,6 +121,7 @@ export class App {
 
   /** Programmatic share hook (iOS Shortcut / Plan B native Share Extension). */
   async receiveSharedUrl(url: string, title?: string): Promise<void> {
+    assertSafeUrl(url);
     const status = await this.engine.getStatus();
     if (!status.enabled) {
       this.pendingShare = { url, title };
@@ -110,8 +130,39 @@ export class App {
     await this.addBookmark(title ?? url, url);
   }
 
+  /**
+   * Adds a share that arrived before the list was ready. Guarded, because this
+   * runs on the boot path: a rejected URL must surface as a message, not as an
+   * exception that leaves the app half-rendered.
+   */
+  private async flushPendingShare(): Promise<void> {
+    const share = this.pendingShare;
+    if (!share) {
+      return;
+    }
+    this.pendingShare = undefined;
+    try {
+      await this.addBookmark(share.title ?? share.url, share.url);
+    } catch (err) {
+      this.reportAddError(err);
+    }
+  }
+
+  private reportAddError(err: unknown): void {
+    const text = err instanceof Error ? err.message : 'Could not add the shared URL.';
+    if (this.addMsgEl) {
+      this.addMsgEl.className = 'msg error';
+      this.addMsgEl.textContent = text;
+    } else {
+      console.error(err);
+    }
+  }
+
   private clear(): void {
     this.root.replaceChildren();
+    // Dropped with the DOM it pointed at, so a message never goes to a detached
+    // node after a logout; renderList sets it again on the way back in.
+    this.addMsgEl = undefined;
   }
 
   private renderLogin(): void {
@@ -170,10 +221,7 @@ export class App {
     try {
       await this.engine.enableExistingSync(serviceUrl, syncId, password);
       await this.loadAndRenderList();
-      if (this.pendingShare) {
-        await this.addBookmark(this.pendingShare.title ?? this.pendingShare.url, this.pendingShare.url);
-        this.pendingShare = undefined;
-      }
+      await this.flushPendingShare();
     } catch (err) {
       submit.disabled = false;
       submit.textContent = 'Log in';
@@ -206,6 +254,7 @@ export class App {
     const addUrl = el('input', { type: 'url', 'data-testid': 'addUrl', placeholder: 'https://…' }) as HTMLInputElement;
     const addBtn = el('button', { type: 'submit', 'data-testid': 'addSubmit' }, 'Add') as HTMLButtonElement;
     const addMsg = el('div', { 'data-testid': 'addMessage' });
+    this.addMsgEl = addMsg;
     const addForm = el(
       'form',
       { class: 'card', 'data-testid': 'addForm' },
@@ -346,6 +395,10 @@ export class App {
 
   /** Adds locally, pushes to the service, then re-renders the list. */
   private async addBookmark(title: string, url: string): Promise<void> {
+    // Rejected here rather than left to the sync engine, which drops unsafe-scheme
+    // nodes from the tree it uploads without telling anyone: the bookmark would sit
+    // in the local list looking saved and never reach another device.
+    assertSafeUrl(url);
     await this.provider.addBookmark(title, url);
     await this.pushWithLastWriteWins();
     await this.refreshResults();

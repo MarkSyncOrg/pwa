@@ -157,19 +157,26 @@ ul.bookmarks > li { padding: 14px 0; }
 /* Titles and URLs are truncated to a single line: a synced tree holds plenty of
    40-word titles and query-string URLs, and letting those wrap turns the list
    into a wall of text. The full value stays in the row's title attribute. */
-.bookmark a, .bookmark .url {
+.bookmark a, .bookmark .blocked, .bookmark .url {
   display: block;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.bookmark a {
+.bookmark a, .bookmark .blocked {
   color: var(--fg);
   text-decoration: none;
   font-weight: 700;
 }
 .bookmark a:hover { color: var(--accent); }
+/* A bookmark whose scheme is not safe to follow (javascript:, data:) renders as
+   inert text, so it must not look clickable — dimmed and struck through. */
+.bookmark .blocked {
+  color: var(--muted);
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
 .bookmark .url {
   font-family: var(--mono);
   color: var(--dim);

@@ -2,5 +2,8 @@
 # prebuilt tarball from GitHub Packages, so only esbuild (vite) needs a build.
 allowBuilds:
   esbuild: true
+# First-party package published from our own repo, so the release-age quarantine
+# (which exists to catch a compromised upstream release) buys nothing and would
+# only stall a deploy behind our own publish.
 minimumReleaseAgeExclude:
-  - '@marksyncorg/core@0.1.2'
+  - '@marksyncorg/core@0.2.0'

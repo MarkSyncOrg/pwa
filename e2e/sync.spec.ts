@@ -209,6 +209,120 @@ test('folders render as an expandable tree; search flattens it with breadcrumbs'
   await ctx.close();
 });
 
+// Security behaviour introduced by @marksyncorg/core 0.2.0: unsafe URL schemes are
+// dropped from every tree crossing a trust boundary, and the app is responsible for
+// the two ends the library cannot reach — the add form and the render.
+
+const UNSAFE_URL = 'javascript:alert(document.domain)';
+
+test('a javascript: bookmark in the sync payload never reaches the list', async ({ browser }) => {
+  // Core sanitises the decrypted tree, so the entry is gone before the PWA's store
+  // ever sees it; the two safe siblings still arrive.
+  const toolbar = newBookmark(BookmarkContainer.Toolbar);
+  toolbar.children = [
+    newBookmark('xBrowserSync', 'https://www.xbrowsersync.org/'),
+    newBookmark('Pwned', UNSAFE_URL),
+    newBookmark('GitHub', 'https://github.com/'),
+  ];
+  const state: ServerState = {
+    blob: await encryptCustomTree([toolbar]),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+  await expect(page.getByText('Pwned')).toHaveCount(0);
+  await ctx.close();
+});
+
+test('the add form rejects an unsafe URL instead of storing one that will not sync', async ({
+  browser,
+}) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  // type="url" would block this on submit, so set the value past the form and
+  // submit programmatically — the same path the share hooks take.
+  await page.getByTestId('addTitle').fill('Pwned');
+  await page.getByTestId('addUrl').evaluate((input, value) => {
+    (input as HTMLInputElement).type = 'text';
+    (input as HTMLInputElement).value = value;
+  }, UNSAFE_URL);
+  await page.getByTestId('addSubmit').click();
+
+  await expect(page.getByTestId('addMessage')).toHaveText(/http, https, ftp and mailto/i);
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+
+  // The share hook rejects it too, rather than queueing it for later.
+  const rejected = await page.evaluate(
+    (url) => window.marksyncReceiveSharedUrl(url).then(() => false, () => true),
+    UNSAFE_URL,
+  );
+  expect(rejected).toBe(true);
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+  await ctx.close();
+});
+
+test('an unsafe URL already in the local store renders inert, not as a link', async ({
+  browser,
+}) => {
+  // Defence in depth for a tree written by a pre-0.2.0 build: the store is not a
+  // trust boundary the library sees, so the guard has to be at the render.
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+
+  // Write straight into the PWA's IndexedDB store, bypassing every core code path.
+  await page.evaluate(async (url) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open('marksync', 1);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    const tx = db.transaction('kv', 'readwrite');
+    const store = tx.objectStore('kv');
+    const tree = await new Promise<unknown>((resolve, reject) => {
+      const get = store.get('localBookmarks');
+      get.onsuccess = () => resolve(get.result);
+      get.onerror = () => reject(get.error);
+    });
+    const containers = tree as { children?: { title: string; url: string }[] }[];
+    containers[0]!.children!.push({ title: 'Legacy Pwned', url });
+    await new Promise<void>((resolve, reject) => {
+      const put = store.put(containers, 'localBookmarks');
+      put.onsuccess = () => resolve();
+      put.onerror = () => reject(put.error);
+    });
+  }, UNSAFE_URL);
+
+  await page.reload();
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(3);
+  await expect(page.getByRole('link', { name: 'Legacy Pwned' })).toHaveCount(0);
+  await expect(page.getByTestId('blockedBookmark')).toHaveText('Legacy Pwned');
+  await ctx.close();
+});
+
 test('window.marksyncReceiveSharedUrl adds and syncs a bookmark', async ({ browser }) => {
   const state: ServerState = {
     blob: await encryptTree(SEEDED),
