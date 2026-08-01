@@ -22,6 +22,38 @@ plain TS + DOM UI, the service worker and the manifest.
 `src/main.ts` wires the adapters into the `SyncEngine`; `src/ui/app.ts` is the
 framework-free view (login, list + search, add form).
 
+## Security responsibilities of this repo
+
+Core sanitises every bookmark tree that crosses a trust boundary — a decrypted
+sync payload, a backup file, the tree it is about to upload. Its `SECURITY.md`
+names three things a consuming app has to handle itself; here is where each one
+lands:
+
+- **Check URLs before rendering.** The list renders from the local IndexedDB
+  store, which core never sees, so `bookmarkItem` in `src/ui/app.ts` runs
+  `isSafeBookmarkUrl` and shows an unsafe entry as inert struck-through text
+  instead of an `<a href>`. The add form and the share hooks reject the same
+  schemes up front — core would silently drop them from the uploaded tree, so a
+  bookmark accepted here would look saved and never reach another device.
+  Filtering is not deletion: since core 0.3.0 an entry already in the store is
+  put back before the destructive write that applies a pulled tree, so it stays
+  on this device indefinitely without ever being uploaded. That is why the row
+  says so rather than just looking broken.
+- **The storage area holds the decryption key.** `SyncInfo.passwordHash` is the
+  AES key, and `IndexedDbStorageArea` is plain IndexedDB — anything with script
+  access to this origin can decrypt the whole sync. That is inherited
+  xBrowserSync behaviour and cannot change without breaking compatibility, so
+  treat "device or origin compromised" as "sync compromised".
+- **The service is trusted for freshness, not for history.** A compromised
+  service can replay an older, genuinely valid payload and the client will
+  accept it. Core requires `https` (plain `http` only for loopback), which the
+  login form's service URL now goes through.
+
+Two login-time behaviours come from core and surface as ordinary form errors:
+the service URL must be `https` with no query, fragment or embedded credentials,
+and the sync ID must be 32 lowercase hex characters (checked before the
+250k-iteration key derivation, so a typo fails immediately).
+
 ## List view
 
 Browsing shows the container tree as expandable folders (native `<details>`,
@@ -38,16 +70,35 @@ drop their scheme, which keeps a long tracking URL from taking three lines.
 ## Develop
 
 ```sh
-pnpm install        # needs a read:packages token for @marksyncorg/core
+pnpm install        # needs a read:packages token (see below)
 pnpm dev            # vite dev server (SW enabled)
 pnpm build          # typecheck + production build to dist/
 pnpm preview        # serve the built dist
 pnpm test:e2e       # Playwright: login -> render -> add -> pull -> offline
 ```
 
+`@marksyncorg/core` comes from GitHub Packages, whose npm registry requires
+authentication even though the repo is public — unlike `ghcr.io`, it has no
+anonymous read. The token has to live somewhere pnpm will expand, which is not
+this repo's `.npmrc` (see the note in that file):
+
+```sh
+pnpm config set '//npm.pkg.github.com/:_authToken' <token with read:packages>
+```
+
+Without it `pnpm install` fails with `ERR_PNPM_FETCH_401`. You need it to bump the
+dependency too: CI installs with `--frozen-lockfile`, so a version change that did
+not regenerate `pnpm-lock.yaml` fails the build rather than being quietly
+re-resolved.
+
 The e2e suite mocks the xBrowserSync API at the network layer and seeds a sync
 blob encrypted with the real core crypto, so it exercises the genuine
-decrypt/encrypt path without a live backend.
+decrypt/encrypt path without a live backend. Four of its cases pin the URL-scheme
+policy: dropped on the way in from the service, rejected by the add form and the
+share hook, rendered inert if it is already sitting in the local store, and kept
+across a pull that rewrites the whole tree while still being left out of the push
+(the consumer-side regression test for
+[core#3](https://github.com/MarkSyncOrg/core/issues/3)).
 
 ## Brand assets
 

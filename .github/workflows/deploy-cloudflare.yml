@@ -50,10 +50,13 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: '@marksyncorg'
 
-      # --no-frozen-lockfile: the committed lockfile still pins the old
-      # @xbrowsersync/core git dependency and cannot be regenerated locally
-      # without a read:packages token, so CI has to resolve the rename itself.
-      - run: pnpm install --no-frozen-lockfile
+      # --frozen-lockfile: the lockfile is authoritative, so a dependency bump that
+      # forgot to regenerate it fails here instead of being silently re-resolved into
+      # a production deploy. This ran with --no-frozen-lockfile while the committed
+      # lockfile still held the pre-rename @xbrowsersync/core git resolution and could
+      # not be regenerated without a read:packages token; the rename commit replaced
+      # that entry, which removed the reason.
+      - run: pnpm install --frozen-lockfile
 
       - run: pnpm build
 
