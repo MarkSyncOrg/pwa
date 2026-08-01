@@ -70,12 +70,26 @@ drop their scheme, which keeps a long tracking URL from taking three lines.
 ## Develop
 
 ```sh
-pnpm install        # needs a read:packages token for @marksyncorg/core
+pnpm install        # needs a read:packages token (see below)
 pnpm dev            # vite dev server (SW enabled)
 pnpm build          # typecheck + production build to dist/
 pnpm preview        # serve the built dist
 pnpm test:e2e       # Playwright: login -> render -> add -> pull -> offline
 ```
+
+`@marksyncorg/core` comes from GitHub Packages, whose npm registry requires
+authentication even though the repo is public — unlike `ghcr.io`, it has no
+anonymous read. The token has to live somewhere pnpm will expand, which is not
+this repo's `.npmrc` (see the note in that file):
+
+```sh
+pnpm config set '//npm.pkg.github.com/:_authToken' <token with read:packages>
+```
+
+Without it `pnpm install` fails with `ERR_PNPM_FETCH_401`. You need it to bump the
+dependency too: CI installs with `--frozen-lockfile`, so a version change that did
+not regenerate `pnpm-lock.yaml` fails the build rather than being quietly
+re-resolved.
 
 The e2e suite mocks the xBrowserSync API at the network layer and seeds a sync
 blob encrypted with the real core crypto, so it exercises the genuine
