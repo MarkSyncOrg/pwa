@@ -189,6 +189,20 @@ ul.bookmarks > li { padding: 14px 0; }
   color: var(--dim);
   margin-bottom: 4px;
 }
+/* Sits between the URL and the tags: what the bookmark is about, in the reader's
+   own words or the page's. Clamped to two lines so one verbose entry cannot push
+   the rest of the list off the screen; the full text is in the title attribute. */
+.bookmark .description {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .bookmark .tags {
   font-family: var(--mono);
   font-size: 12px;

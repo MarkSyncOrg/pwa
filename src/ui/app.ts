@@ -89,6 +89,13 @@ function bookmarkItem(b: FlatBookmark, showPath: boolean): HTMLElement {
         ),
     el('div', { class: 'url', title: b.url }, prettyUrl(b.url)),
   );
+  // Description and tags come from the sync, not from any browser: no bookmarks API
+  // has anywhere to keep them, so they exist only in the synced payload. The PWA is
+  // where they are read — an extension can capture them while you are on the page,
+  // but this is the view with room to show what they say.
+  if (b.description) {
+    item.append(el('div', { class: 'description', title: b.description }, b.description));
+  }
   if (b.tags?.length) item.append(el('div', { class: 'tags' }, b.tags.join(', ')));
   return item;
 }
@@ -334,7 +341,7 @@ export class App {
     }
 
     const matches = this.bookmarks.filter((b) =>
-      [b.title, b.url, ...(b.tags ?? [])].some((s) => s?.toLowerCase().includes(q)),
+      [b.title, b.url, b.description, ...(b.tags ?? [])].some((s) => s?.toLowerCase().includes(q)),
     );
     countEl.textContent = `${matches.length} of ${this.bookmarks.length} match "${this.query}"`;
     listEl.className = 'bookmarks';

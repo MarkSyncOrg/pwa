@@ -63,9 +63,26 @@ open, deeper folders closed; toggles are remembered per folder id — a title
 path, not an index — so an add or a sync does not reshuffle what is expanded.
 
 Searching switches the same element to a flat list of matches, each tagged with
-its folder path, since a filtered tree hides more than it explains. Titles and
-URLs are truncated to one line (full value in the `title` attribute) and URLs
-drop their scheme, which keeps a long tracking URL from taking three lines.
+its folder path, since a filtered tree hides more than it explains. It matches
+titles, URLs, descriptions and tags. Titles and URLs are truncated to one line
+(full value in the `title` attribute) and URLs drop their scheme, which keeps a
+long tracking URL from taking three lines.
+
+### Descriptions and tags
+
+Both are part of the xBrowserSync bookmark model and neither is browser bookmark
+data: no bookmarks API has anywhere to keep them, so they exist only inside the
+synced payload. The extension has to hold them in a sidecar beside the browser's
+own bookmarks to stop a native round trip from erasing them; the PWA needs no such
+thing, because its store *is* the xBrowserSync tree — `LocalBookmarksProvider`
+reads and writes whole `Bookmark` nodes, so the metadata is carried by
+construction.
+
+What the PWA adds is somewhere to read them. A description renders under the URL,
+clamped to two lines so one verbose entry cannot push the list off the screen, and
+tags render below it; both feed the search box. This is the division of labour
+between the two clients: an extension can capture metadata because it is sitting on
+the page, and this is the view with room to show what it captured.
 
 ## Develop
 
