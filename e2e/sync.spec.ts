@@ -407,3 +407,61 @@ test('window.marksyncReceiveSharedUrl adds and syncs a bookmark', async ({ brows
   await expect(page.getByTestId('bookmarkItem')).toHaveCount(3);
   await ctx.close();
 });
+
+test('descriptions and tags survive a pull, are searchable, and are not stripped on push', async ({
+  browser,
+}) => {
+  // Descriptions and tags are part of the xBrowserSync model but no browser stores
+  // them, so they exist only in the synced payload. A client that drops them on the
+  // way through erases them for every device sharing the sync — which is exactly what
+  // this asserts does not happen here.
+  const described = [newBookmark(BookmarkContainer.Toolbar)];
+  const toolbar = getContainer(BookmarkContainer.Toolbar, described, true)!;
+  toolbar.children = [
+    newBookmark('Caniuse', 'https://caniuse.com/', 'Browser support tables', [
+      'compat',
+      'reference',
+    ]),
+    newBookmark('GitHub', 'https://github.com/'),
+  ];
+
+  const state: ServerState = {
+    blob: await encryptCustomTree(described),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  // Both are rendered, so metadata written by another client is actually readable.
+  const caniuse = page.getByTestId('bookmarkItem').filter({ hasText: 'Caniuse' });
+  await expect(caniuse).toContainText('Browser support tables');
+  await expect(caniuse).toContainText('compat, reference');
+
+  // Searchable by description and by tag, not just by title and URL.
+  await page.getByTestId('search').fill('support tables');
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(1);
+  await page.getByTestId('search').fill('compat');
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(1);
+  await page.getByTestId('search').fill('');
+
+  // Adding a bookmark pushes the whole tree. The metadata on the entry we did not
+  // touch has to still be in what goes up.
+  await page.getByTestId('addTitle').fill('Hacker News');
+  await page.getByTestId('addUrl').fill('https://news.ycombinator.com/');
+  await page.getByTestId('addSubmit').click();
+  await expect(page.getByTestId('addMessage')).toHaveText(/synced/i);
+
+  const pushed = JSON.parse(await decryptTree(state.blob)) as {
+    children?: { children?: { url?: string; description?: string; tags?: string[] }[] }[];
+  }[];
+  const uploaded = pushed[0]!.children!.find((node) => node.url === 'https://caniuse.com/')!;
+  expect(uploaded.description).toBe('Browser support tables');
+  expect(uploaded.tags).toEqual(['compat', 'reference']);
+
+  await ctx.close();
+});
