@@ -85,7 +85,7 @@ label {
   color: var(--dim);
   margin: 16px 0 6px;
 }
-input[type="text"], input[type="password"], input[type="url"], input[type="search"] {
+input[type="text"], input[type="password"], input[type="url"], input[type="search"], textarea {
   width: 100%;
   padding: 11px 14px;
   border: 1px solid var(--border-strong);
@@ -94,11 +94,29 @@ input[type="text"], input[type="password"], input[type="url"], input[type="searc
   background: var(--bg);
   color: var(--fg);
 }
-input::placeholder { color: var(--dim); }
-input:focus {
+/* The description field grows by hand, not on its own: an autosizing box would
+   reflow the whole form as a suggestion lands in it. */
+textarea {
+  display: block;
+  resize: vertical;
+  min-height: 62px;
+}
+input::placeholder, textarea::placeholder { color: var(--dim); }
+input:focus, textarea:focus {
   outline: 1px solid var(--accent);
   outline-offset: -2px;
   border-color: var(--accent);
+}
+
+/* Mono metadata under a field: the description's character count, and the note that
+   says a description or tags came from the page rather than from the user. */
+.hint {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  margin-top: 6px;
+  min-height: 1em;
 }
 
 /* Site CTAs: Archivo 800, lime field, black text, no rounding. Mono is kept
@@ -252,9 +270,9 @@ ul.tree ul.tree > li.empty { padding: 10px 0; text-align: left; font-size: 13px;
   margin: 12px 0;
 }
 
-/* Phone widths: the header (mark, wordmark, count, two buttons) and the add
-   row (two fields plus a button) both run past 375px on one line, so drop the
-   count to its own line and stack the row. */
+/* Phone widths: the header (mark, wordmark, count, two buttons) and the add form's
+   rows (paired fields, and tags beside the button) all run past 375px on one line, so
+   drop the count to its own line and stack every row. */
 @media (max-width: 560px) {
   #app { padding: 20px 16px 40px; }
   header.bar { flex-wrap: wrap; row-gap: 8px; }

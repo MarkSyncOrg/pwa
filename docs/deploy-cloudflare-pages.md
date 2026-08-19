@@ -72,7 +72,9 @@ Cloudflare consumes them as edge config rather than serving them as files.
 
 - **`_redirects`** — `/* /index.html 200`, the SPA fallback. Static assets are
   matched first, so it only catches client-side routes.
-- **`_headers`** — `immutable` caching for the content-hashed files under
+- **`_headers`** — the Content-Security-Policy and the other security headers (see the
+  README's Injection section; an e2e case pins them against the copy injected into
+  `index.html`), plus `immutable` caching for the content-hashed files under
   `assets/`, and `no-cache` for the entry points. `sw.js` matters most: a cached
   service worker keeps clients on an old build indefinitely.
 

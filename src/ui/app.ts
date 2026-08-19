@@ -1,4 +1,12 @@
-import { isSafeBookmarkUrl, type SyncEngine, SyncConflictError } from '@marksyncorg/core';
+import {
+  DESCRIPTION_MAX_LENGTH,
+  formatTags,
+  isSafeBookmarkUrl,
+  normalizeDescription,
+  parseTags,
+  type SyncEngine,
+  SyncConflictError,
+} from '@marksyncorg/core';
 import {
   buildBookmarkTree,
   type FlatBookmark,
@@ -7,9 +15,47 @@ import {
   type TreeFolder,
   type TreeNode,
 } from '../adapters/local-bookmarks';
+import { readPageMetadata } from '../adapters/page-metadata';
 import './styles.css';
 
 const DEFAULT_SERVICE_URL = 'https://api.xbrowsersync.org';
+
+/**
+ * How long to wait after the last keystroke in the URL field before asking the page
+ * what it says about itself. Long enough that typing a URL out by hand is one request
+ * rather than thirty, short enough that a paste feels immediate.
+ */
+const SUGGEST_DEBOUNCE_MS = 450;
+
+/**
+ * A URL arriving from outside the app: an Android share target, an iOS Shortcut, or the
+ * native Share Extension.
+ *
+ * `text` is the share sheet's text alongside the link — typically the page's excerpt or
+ * the user's selection, which is the one piece of bookmark metadata a share can actually
+ * deliver, since no share sheet has a tags field.
+ */
+export interface SharedUrl {
+  url: string;
+  title?: string;
+  text?: string;
+}
+
+/** The metadata suggestion offered for a URL, normalised and ready for the fields. */
+interface Suggestion {
+  description: string;
+  tags: string[];
+}
+
+/** Live references to the add form's fields, so a suggestion or a share can reach them. */
+interface AddFormFields {
+  title: HTMLInputElement;
+  url: HTMLInputElement;
+  description: HTMLTextAreaElement;
+  tags: HTMLInputElement;
+  count: HTMLElement;
+  hint: HTMLElement;
+}
 
 // Minimal DOM helper: tag with attributes/children, no framework.
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -110,12 +156,20 @@ export class App {
   private openFolders = new Set<string>();
   private closedFolders = new Set<string>();
   private query = '';
-  private pendingShare: { url: string; title?: string } | undefined;
+  private pendingShare: SharedUrl | undefined;
   // Live references to the results region, so adds/syncs can refresh just the
   // list without rebuilding (and wiping) the add form and its status message.
   private listEl: HTMLElement | undefined;
   private countEl: HTMLElement | undefined;
   private addMsgEl: HTMLElement | undefined;
+  private addFields: AddFormFields | undefined;
+  // The URL a suggestion has already been attempted for. Blurring the URL field
+  // repeatedly, or editing the title and coming back, must not refetch the same page —
+  // so a request is only made when this does not already name the URL in the field.
+  // Cleared after an add, which is what lets the next bookmark be asked about even if
+  // it happens to be the same URL.
+  private suggestedFor: string | undefined;
+  private suggestTimer: number | undefined;
 
   constructor(
     root: HTMLElement,
@@ -126,7 +180,7 @@ export class App {
   }
 
   /** Boots: shows the bookmark list if a sync is already enabled, else the login. */
-  async start(share?: { url: string; title?: string }): Promise<void> {
+  async start(share?: SharedUrl): Promise<void> {
     this.pendingShare = share;
     const status = await this.engine.getStatus();
     this.root.removeAttribute('aria-busy');
@@ -138,15 +192,25 @@ export class App {
     }
   }
 
-  /** Programmatic share hook (iOS Shortcut / Plan B native Share Extension). */
-  async receiveSharedUrl(url: string, title?: string): Promise<void> {
+  /**
+   * Programmatic share hook (iOS Shortcut / Plan B native Share Extension).
+   *
+   * `text` is what the share sheet carried alongside the link — on both Android's
+   * share target and an iOS Shortcut that is the page's own excerpt or selection, so
+   * it becomes the bookmark's description. This path stores it without a review step
+   * because it has none to offer: the share *is* the confirmation, and the alternative
+   * is a bookmark with no description at all. The add form, which does have a review
+   * step, only ever suggests (see {@link suggestFromPage}).
+   */
+  async receiveSharedUrl(url: string, title?: string, text?: string): Promise<void> {
     assertSafeUrl(url);
+    const share: SharedUrl = { url, title, text };
     const status = await this.engine.getStatus();
     if (!status.enabled) {
-      this.pendingShare = { url, title };
+      this.pendingShare = share;
       return;
     }
-    await this.addBookmark(title ?? url, url);
+    await this.addShare(share);
   }
 
   /**
@@ -161,10 +225,26 @@ export class App {
     }
     this.pendingShare = undefined;
     try {
-      await this.addBookmark(share.title ?? share.url, share.url);
+      await this.addShare(share);
     } catch (err) {
       this.reportAddError(err);
     }
+  }
+
+  /**
+   * Adds a shared URL with whatever metadata the share itself carried.
+   *
+   * Only the shared text is used, never a fetch of the page: this runs on the boot
+   * path, where a slow or unreachable site would delay the one thing the user asked
+   * for. The description is bounded here rather than left to `newBookmark` so the
+   * value handed to the store is already the final one, as it is for the add form.
+   */
+  private async addShare(share: SharedUrl): Promise<void> {
+    // A share sheet that has no separate description field often repeats the link in
+    // its text; as a description that is noise, so it is dropped.
+    const text = share.text?.trim();
+    const description = text && text !== share.url ? normalizeDescription(text) : undefined;
+    await this.addBookmark(share.title ?? share.url, share.url, description);
   }
 
   private reportAddError(err: unknown): void {
@@ -179,9 +259,15 @@ export class App {
 
   private clear(): void {
     this.root.replaceChildren();
-    // Dropped with the DOM it pointed at, so a message never goes to a detached
-    // node after a logout; renderList sets it again on the way back in.
+    // Dropped with the DOM they pointed at, so a message or a suggestion never goes
+    // to a detached node after a logout; renderList sets them again on the way back
+    // in. The pending debounce is cancelled for the same reason.
     this.addMsgEl = undefined;
+    this.addFields = undefined;
+    if (this.suggestTimer !== undefined) {
+      clearTimeout(this.suggestTimer);
+      this.suggestTimer = undefined;
+    }
   }
 
   private renderLogin(): void {
@@ -268,25 +354,81 @@ export class App {
     syncBtn.addEventListener('click', () => void this.doSync(syncBtn));
     logoutBtn.addEventListener('click', () => void this.logout());
 
-    // Add form
-    const addTitle = el('input', { type: 'text', 'data-testid': 'addTitle', placeholder: 'Title' }) as HTMLInputElement;
-    const addUrl = el('input', { type: 'url', 'data-testid': 'addUrl', placeholder: 'https://…' }) as HTMLInputElement;
+    // Add form. Description and tags are here for the same reason they are in the
+    // extension's popup: they are part of the bookmark, so the moment it is created is
+    // the moment to fill them in — and the only moment at which the page can still be
+    // asked what it would suggest.
+    const addTitle = el('input', { type: 'text', id: 'addTitle', 'data-testid': 'addTitle', placeholder: 'Title' }) as HTMLInputElement;
+    const addUrl = el('input', { type: 'url', id: 'addUrl', 'data-testid': 'addUrl', placeholder: 'https://…' }) as HTMLInputElement;
+    const addDescription = el('textarea', {
+      id: 'addDescription',
+      rows: '2',
+      // The counter and the suggestion note are read out with the field rather than
+      // being two orphaned lines of text a screen reader meets on its own.
+      'aria-describedby': 'addDescriptionCount addHint',
+      'data-testid': 'addDescription',
+      placeholder: 'What is this page?',
+    }) as HTMLTextAreaElement;
+    // The browser enforces the model's own limit, so the field cannot hold more than
+    // the sync will carry: what the user types is what gets stored, with no silent
+    // truncation on save.
+    addDescription.maxLength = DESCRIPTION_MAX_LENGTH;
+    const addTags = el('input', {
+      type: 'text',
+      id: 'addTags',
+      'aria-describedby': 'addHint',
+      'data-testid': 'addTags',
+      placeholder: 'comma, separated, tags',
+    }) as HTMLInputElement;
+    const addCount = el('div', { class: 'hint', id: 'addDescriptionCount', 'data-testid': 'addDescriptionCount' });
+    // A suggestion arriving is announced, since it changes fields the user is not
+    // looking at; `polite` waits for a pause rather than interrupting their typing.
+    const addHint = el('div', {
+      class: 'hint',
+      id: 'addHint',
+      role: 'status',
+      'aria-live': 'polite',
+      'data-testid': 'addHint',
+    });
     const addBtn = el('button', { type: 'submit', 'data-testid': 'addSubmit' }, 'Add') as HTMLButtonElement;
     const addMsg = el('div', { 'data-testid': 'addMessage' });
     this.addMsgEl = addMsg;
+    this.addFields = {
+      title: addTitle,
+      url: addUrl,
+      description: addDescription,
+      tags: addTags,
+      count: addCount,
+      hint: addHint,
+    };
+    this.renderDescriptionCount();
+
     const addForm = el(
       'form',
       { class: 'card', 'data-testid': 'addForm' },
       el('div', { class: 'row' },
-        el('div', {}, el('label', {}, 'Title'), addTitle),
-        el('div', {}, el('label', {}, 'URL'), addUrl),
+        el('div', {}, el('label', { for: 'addTitle' }, 'Title'), addTitle),
+        el('div', {}, el('label', { for: 'addUrl' }, 'URL'), addUrl),
+      ),
+      el('div', { class: 'row' },
+        el('div', {}, el('label', { for: 'addDescription' }, 'Description'), addDescription, addCount),
+      ),
+      el('div', { class: 'row' },
+        el('div', {}, el('label', { for: 'addTags' }, 'Tags'), addTags),
         addBtn,
       ),
+      addHint,
       addMsg,
     );
+    addDescription.addEventListener('input', () => this.renderDescriptionCount());
+    // Two triggers for one suggestion: the debounced one catches a paste or a URL typed
+    // out in full without ever leaving the field, and `change` (blur or Enter) asks
+    // immediately rather than making the user wait out the debounce.
+    addUrl.addEventListener('input', () => this.scheduleSuggest());
+    addUrl.addEventListener('change', () => this.suggestNow());
     addForm.addEventListener('submit', (e) => {
       e.preventDefault();
-      void this.onAdd(addTitle, addUrl, addBtn, addMsg);
+      void this.onAdd(addBtn, addMsg);
     });
 
     // Search
@@ -383,15 +525,99 @@ export class App {
     return el('li', { class: 'folder', 'data-testid': 'folderItem' }, details);
   }
 
-  private async onAdd(
-    title: HTMLInputElement,
-    url: HTMLInputElement,
-    btn: HTMLButtonElement,
-    msg: HTMLElement,
-  ): Promise<void> {
+  /** Updates the character counter under the description field. */
+  private renderDescriptionCount(): void {
+    const fields = this.addFields;
+    if (!fields) {
+      return;
+    }
+    fields.count.textContent = `${fields.description.value.length} / ${DESCRIPTION_MAX_LENGTH} characters`;
+  }
+
+  /** Debounced suggestion, for a URL still being typed or just pasted. */
+  private scheduleSuggest(): void {
+    if (this.suggestTimer !== undefined) {
+      clearTimeout(this.suggestTimer);
+    }
+    this.suggestTimer = window.setTimeout(() => {
+      this.suggestTimer = undefined;
+      void this.suggestFromPage();
+    }, SUGGEST_DEBOUNCE_MS);
+  }
+
+  /** Immediate suggestion, for a URL the user has finished with (blur or Enter). */
+  private suggestNow(): void {
+    if (this.suggestTimer !== undefined) {
+      clearTimeout(this.suggestTimer);
+      this.suggestTimer = undefined;
+    }
+    void this.suggestFromPage();
+  }
+
+  /**
+   * Fills the empty description and tag fields with what the page says about itself.
+   *
+   * Only ever fills a field that is empty, so nothing the user typed is overwritten by
+   * a page's own claims about itself. Nothing is stored either: this is a suggestion
+   * sitting in the form until the user presses Add, which is why the hint says so
+   * rather than letting them think it is already recorded. Both rules are the
+   * extension's, so the two clients behave the same way at the same moment.
+   *
+   * A PWA cannot read a page it is not on, so unlike the extension this usually comes
+   * back empty — see `../adapters/page-metadata`. Silence is the designed outcome: the
+   * fields stay as they were and no message claims anything was tried.
+   */
+  private async suggestFromPage(): Promise<void> {
+    const fields = this.addFields;
+    if (!fields) {
+      return;
+    }
+    const url = fields.url.value.trim();
+    if (!url || !isSafeBookmarkUrl(url) || url === this.suggestedFor) {
+      return;
+    }
+    if (fields.description.value !== '' && fields.tags.value !== '') {
+      return;
+    }
+    this.suggestedFor = url;
+
+    const metadata = await readPageMetadata(url);
+    const suggestion: Suggestion = {
+      description: normalizeDescription(metadata.description),
+      tags: parseTags(metadata.tags ?? ''),
+    };
+
+    // The fetch took time, and the form may have moved on while it was in flight: a
+    // re-render replaced the fields, the user retyped the URL, or they filled in a
+    // description themselves. Any of those makes this answer stale, and laying it down
+    // anyway would overwrite what the user did.
+    if (this.addFields !== fields || fields.url.value.trim() !== url) {
+      return;
+    }
+    const filled: string[] = [];
+    if (suggestion.description !== '' && fields.description.value === '') {
+      fields.description.value = suggestion.description;
+      this.renderDescriptionCount();
+      filled.push('description');
+    }
+    if (suggestion.tags.length > 0 && fields.tags.value === '') {
+      fields.tags.value = formatTags(suggestion.tags);
+      filled.push('tags');
+    }
+    if (filled.length === 0) {
+      return;
+    }
+    fields.hint.textContent = `Suggested ${filled.join(' and ')} from the page — press Add to keep.`;
+  }
+
+  private async onAdd(btn: HTMLButtonElement, msg: HTMLElement): Promise<void> {
+    const fields = this.addFields;
     msg.className = '';
     msg.textContent = '';
-    const urlValue = url.value.trim();
+    if (!fields) {
+      return;
+    }
+    const urlValue = fields.url.value.trim();
     if (!urlValue) {
       msg.className = 'msg error';
       msg.textContent = 'URL is required.';
@@ -399,9 +625,23 @@ export class App {
     }
     btn.disabled = true;
     try {
-      await this.addBookmark(title.value.trim() || urlValue, urlValue);
-      title.value = '';
-      url.value = '';
+      // Normalised before it reaches the store, so what the list shows after the add is
+      // what actually went into the tree: tags de-duplicated, sorted and bounded by
+      // core, which is the canonical order both dirty detection and the merge compare.
+      await this.addBookmark(
+        fields.title.value.trim() || urlValue,
+        urlValue,
+        fields.description.value.trim(),
+        parseTags(fields.tags.value),
+      );
+      fields.title.value = '';
+      fields.url.value = '';
+      fields.description.value = '';
+      fields.tags.value = '';
+      fields.hint.textContent = '';
+      this.renderDescriptionCount();
+      // The next bookmark is a different page, so it gets its own suggestion.
+      this.suggestedFor = undefined;
       msg.className = 'msg ok';
       msg.textContent = 'Added and synced.';
     } catch (err) {
@@ -413,12 +653,17 @@ export class App {
   }
 
   /** Adds locally, pushes to the service, then re-renders the list. */
-  private async addBookmark(title: string, url: string): Promise<void> {
+  private async addBookmark(
+    title: string,
+    url: string,
+    description?: string,
+    tags?: string[],
+  ): Promise<void> {
     // Rejected here rather than left to the sync engine, which drops unsafe-scheme
     // nodes from the tree it uploads without telling anyone: the bookmark would sit
     // in the local list looking saved and never reach another device.
     assertSafeUrl(url);
-    await this.provider.addBookmark(title, url);
+    await this.provider.addBookmark(title, url, description, tags);
     await this.pushWithLastWriteWins();
     await this.refreshResults();
   }

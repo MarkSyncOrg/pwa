@@ -28,12 +28,22 @@ export class LocalBookmarksProvider implements BookmarkProvider {
   /**
    * Adds a single bookmark into the "Other" container (created if missing) and
    * persists the tree. Returns the updated tree. The caller triggers a sync/push.
+   *
+   * The description and tags go in with it rather than being attached afterwards:
+   * this store *is* the xBrowserSync tree, so `newBookmark` puts them exactly where
+   * the sync will carry them from. `newBookmark` also bounds the description and
+   * drops either one when it is empty, so nothing here has to.
    */
-  async addBookmark(title: string, url: string): Promise<Bookmark[]> {
+  async addBookmark(
+    title: string,
+    url: string,
+    description?: string,
+    tags?: string[],
+  ): Promise<Bookmark[]> {
     const tree = await this.getBookmarks();
     const container = getContainer(BookmarkContainer.Other, tree, true);
     container!.children ??= [];
-    container!.children.push(newBookmark(title, url));
+    container!.children.push(newBookmark(title, url, description, tags));
     await this.setBookmarks(tree);
     return tree;
   }

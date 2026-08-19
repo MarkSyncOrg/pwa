@@ -20,3 +20,22 @@
 /manifest.webmanifest
   Cache-Control: no-cache, must-revalidate
   Content-Type: application/manifest+json
+
+# Security headers for every response.
+#
+# The Content-Security-Policy below is the authoritative form — a real header, so it can
+# carry frame-ancestors, which a <meta http-equiv> silently ignores. The same policy is
+# also injected into index.html at build time by cspMetaTag() in vite.config.ts, which is
+# what makes `vite preview` and the e2e suite run under it instead of production being
+# the first place it is exercised.
+#
+# THE TWO MUST MATCH. An e2e case ("the CSP is served in both forms...") reads this file
+# and asserts its policy equals the meta tag's, frame-ancestors aside, so a change to one
+# and not the other fails CI. Every directive is explained in vite.config.ts; the short
+# version is that script-src does the work, while style-src-attr and connect-src are
+# deliberately looser than they look.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self'; font-src 'none'; connect-src 'self' https: http://localhost:* http://127.0.0.1:* http://[::1]:*; manifest-src 'self'; worker-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
