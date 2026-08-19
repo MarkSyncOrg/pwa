@@ -1,28 +1,34 @@
 import { SyncEngine, SyncStore } from '@marksyncorg/core';
 import { IndexedDbStorageArea } from './adapters/indexeddb-storage';
 import { LocalBookmarksProvider } from './adapters/local-bookmarks';
-import { App } from './ui/app';
+import { App, type SharedUrl } from './ui/app';
 
 declare global {
   interface Window {
     // Share hook: invoked by an iOS Shortcut opening the PWA, or by the Plan B
     // native Share Extension. Adds a bookmark to the local store and pushes it.
-    marksyncReceiveSharedUrl: (url: string, title?: string) => Promise<void>;
+    // `text` is optional and becomes the bookmark's description.
+    marksyncReceiveSharedUrl: (url: string, title?: string, text?: string) => Promise<void>;
   }
 }
 
 // iOS cannot be a Web Share Target, so we also accept a shared URL via query
-// params (?shareUrl=…&shareTitle=…). Android delivers the same via the manifest
-// share_target. Read once at boot, then strip the params from the URL.
-function readSharedFromUrl(): { url: string; title?: string } | undefined {
+// params (?shareUrl=…&shareTitle=…&shareText=…). Android delivers the same via the
+// manifest share_target. Read once at boot, then strip the params from the URL.
+function readSharedFromUrl(): SharedUrl | undefined {
   const params = new URLSearchParams(location.search);
   const url = params.get('shareUrl') ?? params.get('url');
   if (!url) {
     return undefined;
   }
-  const title = params.get('shareTitle') ?? params.get('title') ?? params.get('shareText') ?? undefined;
+  const title = params.get('shareTitle') ?? params.get('title') ?? undefined;
+  const text = params.get('shareText') ?? params.get('text') ?? undefined;
   history.replaceState(null, '', location.pathname);
-  return { url, title: title ?? undefined };
+  // The shared text is the page's excerpt, so it belongs in the description — but only
+  // when the share also named the page. A share that carried no title has nothing else
+  // to be called, so the text still names it rather than being dropped, which is what
+  // this hook did with it before there was anywhere better to put it.
+  return title ? { url, title, text } : { url, title: text ?? undefined, text: undefined };
 }
 
 const storage = new IndexedDbStorageArea();
@@ -39,6 +45,6 @@ if (!root) {
 }
 const app = new App(root, engine, provider);
 
-window.marksyncReceiveSharedUrl = (url, title) => app.receiveSharedUrl(url, title);
+window.marksyncReceiveSharedUrl = (url, title, text) => app.receiveSharedUrl(url, title, text);
 
 void app.start(readSharedFromUrl());

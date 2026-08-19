@@ -21,6 +21,8 @@ plain TS + DOM UI, the service worker and the manifest.
 
 `src/main.ts` wires the adapters into the `SyncEngine`; `src/ui/app.ts` is the
 framework-free view (login, list + search, add form).
+`src/adapters/page-metadata.ts` reads what a page says about itself, which is what
+the add form suggests as a description and tags.
 
 ## Security responsibilities of this repo
 
@@ -78,11 +80,38 @@ thing, because its store *is* the xBrowserSync tree — `LocalBookmarksProvider`
 reads and writes whole `Bookmark` nodes, so the metadata is carried by
 construction.
 
-What the PWA adds is somewhere to read them. A description renders under the URL,
-clamped to two lines so one verbose entry cannot push the list off the screen, and
-tags render below it; both feed the search box. This is the division of labour
-between the two clients: an extension can capture metadata because it is sitting on
-the page, and this is the view with room to show what it captured.
+A description renders under the URL, clamped to two lines so one verbose entry cannot
+push the list off the screen, and tags render below it; both feed the search box.
+
+Both are also **editable when a bookmark is created**, and pre-filled the way the
+extension pre-fills them, because the moment a bookmark is added is the only moment at
+which the page can still be asked what it would suggest:
+
+- **The add form** has a description field (bounded to the model's 300 characters, with
+  a live count) and a comma-separated tags field. Entering a URL asks the page for its
+  own `<meta>`, with the extension's precedence — `og:description`, then
+  `twitter:description`, then `description`; `og:video:tag` plus `keywords` for tags — so
+  both clients suggest the same thing for the same page. Two rules come from the
+  extension too: a suggestion only ever fills a field that is **empty**, so nothing the
+  user typed is overwritten, and nothing is stored until Add is pressed, which is what
+  the hint under the form says.
+- **The share hooks** have no review step to offer, so they take the one piece of
+  metadata a share sheet can actually carry — its `text`, the page's excerpt or the
+  user's selection — and store it as the description. (It used to be used as a fallback
+  *title*, which is where a whole paragraph occasionally ended up.) A share whose text is
+  just the link again contributes nothing.
+
+Where the two clients genuinely differ is how they see the page, and it is worth being
+blunt about it. The extension is *on* the page: it injects a collector into the active
+tab under `activeTab` and always has the markup. A PWA never is, so the only way to see a
+page's `<meta>` is to fetch it — which CORS usually forbids, since most sites send no
+`Access-Control-Allow-Origin` (`no-cors` would not help: the response body would be
+opaque). So a miss is the common case here, not the exception, and it is treated as an
+ordinary outcome: the fields stay empty and nothing claims otherwise. The fetch is
+`credentials: 'omit'` with a 4s timeout, stops reading at `</head>`, and parses into an
+inert `DOMParser` document, so a third party's HTML is only ever data. The tags the user
+does end up with are normalised by core (`parseTags`), which de-duplicates, sorts and
+bounds them — the canonical order both dirty detection and the merge compare by value.
 
 ## Develop
 
@@ -110,7 +139,11 @@ re-resolved.
 
 The e2e suite mocks the xBrowserSync API at the network layer and seeds a sync
 blob encrypted with the real core crypto, so it exercises the genuine
-decrypt/encrypt path without a live backend. Four of its cases pin the URL-scheme
+decrypt/encrypt path without a live backend. Two cases cover the metadata added when a
+bookmark is created: one serves a page whose `<meta>` tags *are* readable (the mock
+supplies the `Access-Control-Allow-Origin` a real site would have to) to pin the
+precedence, the normalisation and the fill-only-what-is-empty rule; the other pins what
+the share hooks do with a shared `text`. Four further cases pin the URL-scheme
 policy: dropped on the way in from the service, rejected by the add form and the
 share hook, rendered inert if it is already sitting in the local store, and kept
 across a pull that rewrites the whole tree while still being left out of the push
@@ -137,8 +170,10 @@ of `src/ui/styles.css`.
 ## Share hooks
 
 - **Android:** `share_target` in the manifest (works for installed PWAs).
-- **iOS / Shortcuts / Plan B native:** `window.marksyncReceiveSharedUrl(url, title?)`
-  and the `?shareUrl=…&shareTitle=…` query param, both handled in `src/main.ts`.
+- **iOS / Shortcuts / Plan B native:** `window.marksyncReceiveSharedUrl(url, title?, text?)`
+  and the `?shareUrl=…&shareTitle=…&shareText=…` query params, both handled in
+  `src/main.ts`. `text` becomes the bookmark's description; with no title at all it still
+  names the bookmark, as it did before there was a description to put it in.
 
 ## Deploy
 

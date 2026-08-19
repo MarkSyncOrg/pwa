@@ -465,3 +465,161 @@ test('descriptions and tags survive a pull, are searchable, and are not stripped
 
   await ctx.close();
 });
+
+/**
+ * Serves a page whose `<meta>` tags are what the suggestion is supposed to find, with
+ * the CORS header that makes it readable from the app's origin at all.
+ *
+ * That header is the whole reason this has to be mocked: a real site almost never sends
+ * it, which is exactly the limitation `readPageMetadata` documents. Mocking it here
+ * tests the path that runs when a site does allow the read — the parsing, the
+ * precedence and the fill-only-what-is-empty rule — rather than pretending the common
+ * case is a hit.
+ */
+async function serveMetaPage(context: BrowserContext, url: string): Promise<void> {
+  await context.route(url, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      headers: { 'access-control-allow-origin': '*' },
+      body: `<!doctype html><html><head>
+        <title>Caniuse</title>
+        <meta name="description" content="The plain description, which loses.">
+        <meta property="og:description" content="Support tables for HTML5, CSS3 and more">
+        <meta name="keywords" content="Compat, browser support ,, COMPAT, css">
+      </head><body>ignored</body></html>`,
+    }),
+  );
+}
+
+test('the add form suggests the page description and tags, and only fills empty fields', async ({
+  browser,
+}) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const SUGGESTED = 'https://caniuse.com/suggested';
+  await serveMetaPage(ctx, SUGGESTED);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  // Entering the URL is what triggers the read: the fields fill themselves, and the
+  // hint says the values are a suggestion rather than something already recorded.
+  await page.getByTestId('addUrl').fill(SUGGESTED);
+  await page.getByTestId('addUrl').blur();
+
+  // og:description wins over the plain `description` meta, matching the extension.
+  await expect(page.getByTestId('addDescription')).toHaveValue(
+    'Support tables for HTML5, CSS3 and more',
+  );
+  // Keywords are normalised by core: trimmed, de-duplicated case-insensitively (the
+  // second "COMPAT" is dropped), empties removed and sorted into canonical order.
+  await expect(page.getByTestId('addTags')).toHaveValue('browser support, compat, css');
+  await expect(page.getByTestId('addHint')).toContainText(/suggested/i);
+  await expect(page.getByTestId('addDescriptionCount')).toContainText('39 / 300');
+
+  // What the user typed is never overwritten by the page's own claims. A second URL
+  // with the same metadata leaves both fields exactly as they are now.
+  await page.getByTestId('addDescription').fill('Mine, not the page’s');
+  await page.getByTestId('addTags').fill('keep');
+  const SECOND = 'https://caniuse.com/second';
+  await serveMetaPage(ctx, SECOND);
+  await page.getByTestId('addUrl').fill(SECOND);
+  await page.getByTestId('addUrl').blur();
+  await expect(page.getByTestId('addTags')).toHaveValue('keep');
+  await expect(page.getByTestId('addDescription')).toHaveValue('Mine, not the page’s');
+
+  // Saving puts both into the tree that goes up, so the suggestion the user accepted
+  // reaches every other device rather than living in this browser.
+  await page.getByTestId('addTitle').fill('Caniuse');
+  await page.getByTestId('addSubmit').click();
+  await expect(page.getByTestId('addMessage')).toHaveText(/synced/i);
+
+  const item = page.getByTestId('bookmarkItem').filter({ hasText: 'Caniuse' });
+  await expect(item).toContainText('Mine, not the page’s');
+  await expect(item).toContainText('keep');
+
+  const pushed = JSON.parse(await decryptTree(state.blob)) as {
+    children?: { url?: string; description?: string; tags?: string[] }[];
+  }[];
+  const uploaded = pushed
+    .flatMap((container) => container.children ?? [])
+    .find((node) => node.url === SECOND)!;
+  expect(uploaded.description).toBe('Mine, not the page’s');
+  expect(uploaded.tags).toEqual(['keep']);
+
+  // The form is emptied for the next bookmark, suggestion and hint included.
+  await expect(page.getByTestId('addDescription')).toHaveValue('');
+  await expect(page.getByTestId('addTags')).toHaveValue('');
+  await expect(page.getByTestId('addHint')).toHaveText('');
+
+  await ctx.close();
+});
+
+test('a share with text records it as the description; a share without a title still names the bookmark', async ({
+  browser,
+}) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+
+  // A share sheet carries the page's excerpt as its text. It is the only bookmark
+  // metadata a share can deliver, and the share itself is the confirmation, so it is
+  // stored rather than offered.
+  await page.evaluate(() =>
+    window.marksyncReceiveSharedUrl(
+      'https://example.com/shared',
+      'Shared Link',
+      'What the share sheet said about the page',
+    ),
+  );
+  const shared = page.getByTestId('bookmarkItem').filter({ hasText: 'Shared Link' });
+  await expect(shared).toContainText('What the share sheet said about the page');
+
+  // A share whose text is just the link again would make a description of the URL, so
+  // it is dropped instead.
+  await page.evaluate(() =>
+    window.marksyncReceiveSharedUrl(
+      'https://example.com/echoed',
+      'Echoed',
+      'https://example.com/echoed',
+    ),
+  );
+  const echoed = page.getByTestId('bookmarkItem').filter({ hasText: 'Echoed' });
+  await expect(echoed).toHaveCount(1);
+  await expect(echoed.locator('.description')).toHaveCount(0);
+
+  // The ?share… query params take the same path. With no title the text names the
+  // bookmark, as it did before there was a description to put it in.
+  await page.goto(
+    '/?shareUrl=https%3A%2F%2Fexample.com%2Fvia-params&shareText=Only%20text%20was%20shared',
+  );
+  await expect(page.getByTestId('bookmarkList')).toBeVisible();
+  const viaParams = page.getByTestId('bookmarkItem').filter({ hasText: 'Only text was shared' });
+  await expect(viaParams).toHaveCount(1);
+  await expect(viaParams.locator('.description')).toHaveCount(0);
+
+  const pushed = JSON.parse(await decryptTree(state.blob)) as {
+    children?: { url?: string; description?: string }[];
+  }[];
+  const nodes = pushed.flatMap((container) => container.children ?? []);
+  expect(nodes.find((n) => n.url === 'https://example.com/shared')?.description).toBe(
+    'What the share sheet said about the page',
+  );
+  expect(nodes.find((n) => n.url === 'https://example.com/echoed')?.description).toBeUndefined();
+
+  await ctx.close();
+});
