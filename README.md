@@ -137,13 +137,36 @@ dependency too: CI installs with `--frozen-lockfile`, so a version change that d
 not regenerate `pnpm-lock.yaml` fails the build rather than being quietly
 re-resolved.
 
+### Injection
+
+Titles, descriptions and tags are free text, and core deliberately does not strip markup
+from them: a bookmark whose title really is `<b>x</b>` has to keep it, and a client that
+rewrote the text would corrupt the sync for every other device. Core bounds and
+normalises them — 300 characters for a description, 100 tags of 50 characters — but the
+values themselves arrive verbatim, including from another client or a scraped page.
+
+So the guarantee is made where they are rendered, not where they enter. `src/ui/app.ts`
+builds every node with `createElement` + `createTextNode`; the repo contains no
+`innerHTML`, `insertAdjacentHTML` or `document.write`, so a value is never parsed as
+markup. The only attribute that takes a user-controlled value is an `<a href>`, and it is
+gated on `isSafeBookmarkUrl` (see the list above). Suggested metadata is parsed out of a
+third party's HTML in an inert `DOMParser` document that is never adopted into the page,
+so nothing in it runs, requests a subresource or navigates. Two e2e cases pin all of
+this with real payloads.
+
+Login inputs go to core: the service URL must be `https` with no query, fragment or
+embedded credentials, and the sync ID must be 32 lowercase hex characters — checked
+before it is ever interpolated into a request path.
+
 The e2e suite mocks the xBrowserSync API at the network layer and seeds a sync
 blob encrypted with the real core crypto, so it exercises the genuine
 decrypt/encrypt path without a live backend. Two cases cover the metadata added when a
 bookmark is created: one serves a page whose `<meta>` tags *are* readable (the mock
 supplies the `Access-Control-Allow-Origin` a real site would have to) to pin the
 precedence, the normalisation and the fill-only-what-is-empty rule; the other pins what
-the share hooks do with a shared `text`. Four further cases pin the URL-scheme
+the share hooks do with a shared `text`. Two more pin the injection boundary: markup in a
+title, description and tag rendering as text, and a hostile page failing to inject
+through the metadata it suggests. Four further cases pin the URL-scheme
 policy: dropped on the way in from the service, rejected by the add form and the
 share hook, rendered inert if it is already sitting in the local store, and kept
 across a pull that rewrites the whole tree while still being left out of the push

@@ -623,3 +623,132 @@ test('a share with text records it as the description; a share without a title s
 
   await ctx.close();
 });
+
+// Injection payloads, one per field that a bookmark can carry. Titles, descriptions and
+// tags are free text: core bounds and normalises them but never strips markup from them
+// (nor should it — a bookmark whose title really is `<b>x</b>` must keep it), so the
+// guarantee has to hold at the point they are rendered.
+const XSS_TITLE = '<img src=x onerror="window.__pwned=1">TitlePayload';
+const XSS_DESCRIPTION = '</div><script>window.__pwned=1</script>DescPayload';
+const XSS_TAG = '<svg onload="window.__pwned=1">TagPayload';
+
+test('markup in a title, description or tag is rendered as text, never as HTML', async ({
+  browser,
+}) => {
+  // Arrives the way a hostile value realistically would: written by another client and
+  // pulled out of the sync, so it has crossed core and reaches the renderer intact.
+  const hostile = [newBookmark(BookmarkContainer.Toolbar)];
+  const toolbar = getContainer(BookmarkContainer.Toolbar, hostile, true)!;
+  toolbar.children = [
+    newBookmark(XSS_TITLE, 'https://example.com/hostile', XSS_DESCRIPTION, [XSS_TAG]),
+  ];
+
+  const state: ServerState = {
+    blob: await encryptCustomTree(hostile),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('/');
+  await login(page);
+
+  // Each payload is present as literal text, which is only possible if it went through a
+  // text node rather than being parsed as markup.
+  const item = page.getByTestId('bookmarkItem').filter({ hasText: 'TitlePayload' });
+  await expect(item).toHaveCount(1);
+  await expect(item).toContainText(XSS_TITLE);
+  await expect(item).toContainText(XSS_DESCRIPTION);
+  await expect(item).toContainText(XSS_TAG);
+
+  // Nothing was injected: no element the payloads would have created exists, and no
+  // handler on any of them ran.
+  expect(await page.locator('#app img[src="x"], #app svg, #app script').count()).toBe(0);
+  expect(await page.evaluate(() => '__pwned' in window)).toBe(false);
+  expect(errors).toEqual([]);
+
+  // The same values survive a round trip through the add form, which is the other way in.
+  await page.getByTestId('addTitle').fill(XSS_TITLE);
+  await page.getByTestId('addUrl').fill('https://example.com/typed');
+  await page.getByTestId('addDescription').fill(XSS_DESCRIPTION);
+  await page.getByTestId('addTags').fill(XSS_TAG);
+  await page.getByTestId('addSubmit').click();
+  await expect(page.getByTestId('addMessage')).toHaveText(/synced/i);
+  expect(await page.evaluate(() => '__pwned' in window)).toBe(false);
+  expect(await page.locator('#app img[src="x"], #app svg, #app script').count()).toBe(0);
+
+  // Searching renders the same values down a second code path (flat list + breadcrumb).
+  await page.getByTestId('search').fill('TagPayload');
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+  expect(await page.evaluate(() => '__pwned' in window)).toBe(false);
+  expect(errors).toEqual([]);
+
+  await ctx.close();
+});
+
+test('a hostile page cannot inject through the metadata it suggests', async ({ browser }) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+
+  // The suggestion reads a document the app does not control, so the page gets to choose
+  // the bytes: a script that would run if the markup were ever live, markup inside the
+  // meta content itself, and a redirect that must not be followed.
+  const HOSTILE = 'https://hostile.example/page';
+  await ctx.route(HOSTILE, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      headers: { 'access-control-allow-origin': '*' },
+      body: `<!doctype html><html><head>
+        <script>window.__pwned = 1;</script>
+        <meta http-equiv="refresh" content="0;url=https://elsewhere.example/">
+        <meta property="og:description" content='</textarea><img src=x onerror="window.__pwned=1">Suggested'>
+        <meta name="keywords" content='<svg onload="window.__pwned=1">, ok'>
+        <img src="https://tracker.example/pixel.gif">
+      </head><body></body></html>`,
+    }),
+  );
+  // Nothing in the fetched document may cause a request of its own. Any hit here means
+  // the markup was made live rather than parsed inert.
+  let subresources = 0;
+  await ctx.route('https://tracker.example/**', (route) => {
+    subresources += 1;
+    return route.abort();
+  });
+  await ctx.route('https://elsewhere.example/**', (route) => {
+    subresources += 1;
+    return route.abort();
+  });
+
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('/');
+  const origin = new URL(page.url()).origin;
+  await login(page);
+
+  await page.getByTestId('addUrl').fill(HOSTILE);
+  await page.getByTestId('addUrl').blur();
+
+  // The suggestion still arrives — it is just inert text in a form field.
+  await expect(page.getByTestId('addDescription')).toHaveValue(/Suggested$/);
+  await expect(page.getByTestId('addTags')).toHaveValue(/ok/);
+
+  expect(await page.evaluate(() => '__pwned' in window)).toBe(false);
+  expect(await page.locator('#app img[src="x"], #app svg, #app script').count()).toBe(0);
+  expect(subresources).toBe(0);
+  // The app is still on its own origin: no meta refresh was honoured.
+  expect(new URL(page.url()).origin).toBe(origin);
+  await expect(page.getByTestId('addForm')).toBeVisible();
+  expect(errors).toEqual([]);
+
+  await ctx.close();
+});
