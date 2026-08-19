@@ -33,6 +33,10 @@ jobs:
   e2e:
     name: End-to-end tests (Playwright)
     runs-on: ubuntu-latest
+    # The suite itself takes well under a minute. This is here so that a step which
+    # hangs rather than fails — see the note on --with-deps below — is killed in
+    # minutes instead of occupying a runner until something else cancels it.
+    timeout-minutes: 15
     # Same reason as the deploy job: every pnpm invocation needs to read the private
     # @marksyncorg/core from GitHub Packages.
     env:
@@ -51,10 +55,17 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Chromium only, matching playwright.config.ts. --with-deps pulls the system
-      # libraries the runner image does not ship.
+      # Chromium only, matching playwright.config.ts.
+      #
+      # Deliberately without --with-deps: that flag runs `apt-get` against the Ubuntu
+      # archives, which hung here for 90 minutes with no output before the run was
+      # cancelled. The ubuntu-latest image already ships the shared libraries Chromium
+      # needs — --with-deps is for bare containers — so this trades a dependency on apt
+      # reachability for nothing. If a future image ever does lack a library, Chromium
+      # fails to launch with a named missing .so, which is a fast and legible failure
+      # rather than a stall.
       - name: Install Playwright Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm exec playwright install chromium
 
       # playwright.config.ts's webServer runs `pnpm build && pnpm preview` itself, so the
       # suite tests the production bundle rather than a dev server.
