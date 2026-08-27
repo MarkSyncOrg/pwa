@@ -94,11 +94,14 @@ function cspMetaTag(): Plugin {
 }
 
 export default defineConfig({
-  // Single source of truth for the version shown in the header (see ui/app.ts) and
-  // sent as SyncEngine's appVersion: package.json, inlined at build time so the two
-  // never drift apart the way a second hardcoded literal would.
+  // Single source of truth for the versions shown in the header (see ui/app.ts) and
+  // sent as SyncEngine's appVersion: package.json, inlined at build time so neither
+  // ever drifts from a second hardcoded literal. The core version is read from the
+  // pinned dependency entry rather than @marksyncorg/core's own package.json, since
+  // that is what is actually installed and it needs no exact-version lookup logic.
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    __CORE_VERSION__: JSON.stringify(pkg.dependencies['@marksyncorg/core']),
   },
   plugins: [
     cspMetaTag(),

@@ -86,10 +86,16 @@ function brandMark(): HTMLElement {
   });
 }
 
-// Build-time version (see vite.config.ts), shown in the header on every screen so
-// a bug report or a "which build is this" question always has an answer on-screen.
+// Build-time versions (see vite.config.ts), shown in the header on every screen so
+// a bug report or a "which build is this" question always has an answer on-screen —
+// the core version too, since a sync bug can as easily be @marksyncorg/core's as
+// the PWA's own.
 function versionTag(): HTMLElement {
-  return el('span', { class: 'version', 'data-testid': 'appVersion' }, `v${__APP_VERSION__}`);
+  return el(
+    'span',
+    { class: 'version', 'data-testid': 'appVersion' },
+    `v${__APP_VERSION__} · core ${__CORE_VERSION__}`,
+  );
 }
 
 /**
