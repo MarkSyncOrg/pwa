@@ -218,6 +218,52 @@ test('folders render as an expandable tree; search flattens it with breadcrumbs'
   await ctx.close();
 });
 
+test('expansion state survives a search round-trip that races the toggle event', async ({
+  browser,
+}) => {
+  // `toggle` is queued as a task, not dispatched synchronously, so expansion state
+  // read from that event alone is stale for any re-render that happens in the same
+  // turn as the click. Doing the whole sequence inside one `page.evaluate` pins that
+  // ordering down instead of leaving it to how fast the machine happens to be.
+  const dev = newBookmark('Dev');
+  dev.children = [newBookmark('MDN', 'https://developer.mozilla.org/')];
+  const toolbar = newBookmark(BookmarkContainer.Toolbar);
+  toolbar.children = [dev, newBookmark('Hacker News', 'https://news.ycombinator.com/')];
+
+  const state: ServerState = {
+    blob: await encryptCustomTree([toolbar]),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  await page.getByTestId('folderToggle').filter({ hasText: 'Dev' }).click();
+  await expect(page.getByRole('link', { name: 'MDN' })).toBeVisible();
+
+  // One turn: collapse the container, re-open it, search, clear the search. No
+  // queued toggle event gets to run in between.
+  await page.evaluate(() => {
+    const toggles = [...document.querySelectorAll('[data-testid=folderToggle]')];
+    const container = toggles.find((t) => t.textContent?.includes('Toolbar')) as HTMLElement;
+    container.click();
+    container.click();
+    const search = document.querySelector('[data-testid=search]') as HTMLInputElement;
+    search.value = 'mdn';
+    search.dispatchEvent(new Event('input'));
+    search.value = '';
+    search.dispatchEvent(new Event('input'));
+  });
+
+  await expect(page.getByRole('link', { name: 'Hacker News' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'MDN' })).toBeVisible();
+
+  await ctx.close();
+});
+
 // Security behaviour introduced by @marksyncorg/core 0.2.0: unsafe URL schemes are
 // dropped from every tree crossing a trust boundary, and the app is responsible for
 // the two ends the library cannot reach — the add form and the render.
