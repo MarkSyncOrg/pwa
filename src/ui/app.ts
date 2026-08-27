@@ -152,7 +152,9 @@ export class App {
   private tree: TreeNode[] = [];
   // Expansion state, kept by folder id so it survives a re-render after an add
   // or a sync. Top-level folders (the containers) start open, everything below
-  // starts closed, so only a deliberate toggle is remembered either way.
+  // starts closed, so only a deliberate toggle is remembered either way. Both
+  // sets are refreshed from the live `<details>` elements immediately before
+  // every re-render — see `captureExpansion`.
   private openFolders = new Set<string>();
   private closedFolders = new Set<string>();
   private query = '';
@@ -347,6 +349,7 @@ export class App {
   }
 
   private renderList(): void {
+    if (this.listEl) this.captureExpansion(this.listEl);
     this.clear();
     const status = el('span', { class: 'status', 'data-testid': 'syncStatus' }, `${this.bookmarks.length} bookmarks`);
     const syncBtn = el('button', { class: 'secondary', 'data-testid': 'syncButton' }, 'Sync');
@@ -469,6 +472,7 @@ export class App {
    */
   private renderResults(listEl: HTMLElement, countEl: HTMLElement): void {
     const q = this.query.trim().toLowerCase();
+    this.captureExpansion(listEl);
     listEl.replaceChildren();
 
     if (!q) {
@@ -508,21 +512,40 @@ export class App {
       el('span', { class: 'name' }, folder.title),
       el('span', { class: 'n' }, String(folder.count)),
     );
-    const details = el('details', open ? { open: '' } : {}, summary);
+    // The id travels on the element so `captureExpansion` can read the open
+    // state back off the DOM without a second lookup structure.
+    const details = el('details', { 'data-folder-id': folder.id, ...(open ? { open: '' } : {}) }, summary);
     const children = folder.children.length
       ? folder.children.map((child) => this.renderTreeNode(child, depth + 1))
       : [el('li', { class: 'empty' }, 'Empty folder.')];
     details.append(el('ul', { class: 'tree' }, ...children));
-    details.addEventListener('toggle', () => {
-      if (details.open) {
-        this.openFolders.add(folder.id);
-        this.closedFolders.delete(folder.id);
-      } else {
-        this.closedFolders.add(folder.id);
-        this.openFolders.delete(folder.id);
-      }
-    });
     return el('li', { class: 'folder', 'data-testid': 'folderItem' }, details);
+  }
+
+  /**
+   * Reads the open/closed state of the rendered folders back into the two sets.
+   *
+   * Deliberately not driven by the `toggle` event: that event is queued as a task
+   * rather than dispatched synchronously, so a re-render triggered in the same turn
+   * as the click that opened a folder (typing in the search box right after) would
+   * rebuild the tree from state the pending event had not written yet — and the
+   * event would then land on a detached element, leaving the folder wrongly
+   * collapsed with nothing left to re-render it. Reading the DOM at render time is
+   * exact whatever the task queue is doing, and covers opens the app never saw a
+   * click for (keyboard, find-in-page, `open` set by the UA).
+   */
+  private captureExpansion(listEl: HTMLElement): void {
+    for (const details of listEl.querySelectorAll<HTMLDetailsElement>('details[data-folder-id]')) {
+      const id = details.dataset.folderId;
+      if (id === undefined) continue;
+      if (details.open) {
+        this.openFolders.add(id);
+        this.closedFolders.delete(id);
+      } else {
+        this.closedFolders.add(id);
+        this.openFolders.delete(id);
+      }
+    }
   }
 
   /** Updates the character counter under the description field. */
