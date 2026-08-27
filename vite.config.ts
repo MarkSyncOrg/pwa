@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import pkg from './package.json';
 
 const API_ORIGIN = 'https://api.xbrowsersync.org';
 
@@ -93,6 +94,12 @@ function cspMetaTag(): Plugin {
 }
 
 export default defineConfig({
+  // Single source of truth for the version shown in the header (see ui/app.ts) and
+  // sent as SyncEngine's appVersion: package.json, inlined at build time so the two
+  // never drift apart the way a second hardcoded literal would.
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   plugins: [
     cspMetaTag(),
     VitePWA({
