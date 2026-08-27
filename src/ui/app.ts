@@ -86,6 +86,12 @@ function brandMark(): HTMLElement {
   });
 }
 
+// Build-time version (see vite.config.ts), shown in the header on every screen so
+// a bug report or a "which build is this" question always has an answer on-screen.
+function versionTag(): HTMLElement {
+  return el('span', { class: 'version', 'data-testid': 'appVersion' }, `v${__APP_VERSION__}`);
+}
+
 /**
  * Rejects a URL the core would refuse to sync. `isSafeBookmarkUrl` also rejects
  * anything that is not an absolute URL, which is the check the `type="url"` input
@@ -304,7 +310,7 @@ export class App {
     });
 
     this.root.append(
-      el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync')),
+      el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync'), versionTag()),
       el('div', { class: 'card' }, el('h2', {}, 'Log in to an existing sync'), form),
     );
   }
@@ -447,7 +453,7 @@ export class App {
     this.listEl = listEl;
 
     this.root.append(
-      el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync'), status, syncBtn, logoutBtn),
+      el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync'), versionTag(), status, syncBtn, logoutBtn),
       addForm,
       el('div', { class: 'card' }, el('label', {}, 'Search'), search, countEl, listEl),
     );

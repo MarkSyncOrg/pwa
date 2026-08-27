@@ -36,7 +36,7 @@ const provider = new LocalBookmarksProvider(storage);
 const engine = new SyncEngine({
   store: new SyncStore(storage),
   provider,
-  appVersion: '0.1.0',
+  appVersion: __APP_VERSION__,
 });
 
 const root = document.getElementById('app');
