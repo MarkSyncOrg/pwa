@@ -16,6 +16,7 @@ import {
   type TreeNode,
 } from '../adapters/local-bookmarks';
 import { readPageMetadata } from '../adapters/page-metadata';
+import { cycleTheme, getThemePreference, type ThemePreference } from './theme';
 import './styles.css';
 
 const DEFAULT_SERVICE_URL = 'https://api.xbrowsersync.org';
@@ -74,16 +75,19 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-// Brand mark for the app header. Served from public/, so it is precached with
-// the shell and shows offline; the on-dark variant matches the dark UI.
+// Brand mark for the app header. Both variants are served from public/, so both are
+// precached and show offline; styles.css shows only one at a time, on the same
+// selectors that drive the rest of the theme, so the mark always matches the
+// current theme with no JS involved.
 function brandMark(): HTMLElement {
-  return el('img', {
-    class: 'mark',
-    src: '/brand/marksync-mark.svg',
-    alt: '',
-    width: '20',
-    height: '24',
-  });
+  const img = (variant: 'on-dark' | 'on-light', src: string) =>
+    el('img', { class: variant, src, alt: '', width: '20', height: '24' });
+  return el(
+    'span',
+    { class: 'mark' },
+    img('on-dark', '/brand/marksync-mark.svg'),
+    img('on-light', '/brand/marksync-mark-onlight.svg'),
+  );
 }
 
 // Build-time versions (see vite.config.ts), shown in the header on every screen so
@@ -96,6 +100,38 @@ function versionTag(): HTMLElement {
     { class: 'version', 'data-testid': 'appVersion' },
     `v${__APP_VERSION__} · core ${__CORE_VERSION__}`,
   );
+}
+
+function themeLabel(pref: ThemePreference): string {
+  switch (pref) {
+    case 'system':
+      return 'Auto';
+    case 'light':
+      return 'Light';
+    case 'dark':
+      return 'Dark';
+  }
+}
+
+// Cycles system → light → dark → system. Labelled with the mode's name rather than
+// an icon: the app draws nothing else as an icon (the folder twist is a mono '+'),
+// and a word survives a screen reader and a glance both, which a sun/moon glyph
+// pair does not always do at 11px.
+function themeToggle(): HTMLElement {
+  const btn = el(
+    'button',
+    {
+      type: 'button',
+      class: 'secondary theme-toggle',
+      'data-testid': 'themeToggle',
+      title: 'Switch color theme — cycles Auto, Light, Dark',
+    },
+    themeLabel(getThemePreference()),
+  ) as HTMLButtonElement;
+  btn.addEventListener('click', () => {
+    btn.textContent = themeLabel(cycleTheme());
+  });
+  return btn;
 }
 
 /**
@@ -316,7 +352,7 @@ export class App {
     });
 
     this.root.append(
-      el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync'), versionTag()),
+      el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync'), versionTag(), themeToggle()),
       el('div', { class: 'card' }, el('h2', {}, 'Log in to an existing sync'), form),
     );
   }
@@ -459,7 +495,7 @@ export class App {
     this.listEl = listEl;
 
     this.root.append(
-      el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync'), versionTag(), status, syncBtn, logoutBtn),
+      el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync'), versionTag(), themeToggle(), status, syncBtn, logoutBtn),
       addForm,
       el('div', { class: 'card' }, el('label', {}, 'Search'), search, countEl, listEl),
     );

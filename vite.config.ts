@@ -111,6 +111,10 @@ export default defineConfig({
         'icons/apple-touch-icon.png',
         'icons/favicon-32.png',
         'brand/marksync-mark.svg',
+        // Light-theme mark: shown by styles.css whenever the light theme is active
+        // (system preference or the header's toggle), so it needs the same offline
+        // guarantee as the on-dark one above.
+        'brand/marksync-mark-onlight.svg',
       ],
       manifest: {
         name: 'MarkSync',
