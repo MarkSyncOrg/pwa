@@ -235,7 +235,12 @@ accent, and square corners throughout (the site uses no `border-radius`
 anywhere). Archivo carries UI text, IBM Plex Mono the labels and metadata — both
 declared with system fallbacks rather than fetched from a font CDN, since the
 shell must render offline. All of it lives in the custom properties at the top
-of `src/ui/styles.css`.
+of `src/ui/styles.css`, dark first with a light palette (cream `#f6f5ee` field,
+white panels, near-black `#17170f` text) layered on top for `prefers-color-scheme:
+light` and for the header's Auto/Light/Dark toggle, which persists its choice in
+`localStorage` and is the only piece of theme state that isn't plain CSS — see
+`src/ui/theme.ts`. The brand mark swaps its on-dark/on-light variant on the same
+selectors, purely in CSS.
 
 ## Share hooks
 

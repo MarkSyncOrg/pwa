@@ -2,6 +2,12 @@ import { SyncEngine, SyncStore } from '@marksyncorg/core';
 import { IndexedDbStorageArea } from './adapters/indexeddb-storage';
 import { LocalBookmarksProvider } from './adapters/local-bookmarks';
 import { App, type SharedUrl } from './ui/app';
+import { initTheme } from './ui/theme';
+
+// Before anything else: the palette is CSS-driven and already correct for the
+// system preference, but an explicit light/dark choice from a previous visit and
+// the theme-color meta tag both need this to run before the app takes over.
+initTheme();
 
 declare global {
   interface Window {

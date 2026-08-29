@@ -12,13 +12,63 @@
   --dim: #6a6a5c;
   --accent: #c8f542;
   --accent-fg: #0e0e0b;
+  /* Accent used as text, an icon, or a border against the page background, rather
+     than as a filled surface (buttons, ::selection): needs its own token because
+     the raw lime accent has no contrast left once the light theme's cream
+     background arrives — see the light overrides below. */
+  --accent-ink: #c8f542;
   --border: #2a2a22;
   --border-strong: #3a3a30;
   --danger: #ff5c2b;
+  --danger-bg: rgba(255, 92, 43, 0.08);
   --ok: #c8f542;
+  --ok-bg: rgba(200, 245, 66, 0.08);
   --sans: 'Archivo', Helvetica, system-ui, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   color-scheme: dark;
+}
+
+/*
+ * Light theme. Dark, above, is the unguarded default — the app's original look, and
+ * what a browser with no matchMedia support or a user who has never touched the
+ * header's theme toggle gets. This block applies automatically when the OS/browser
+ * prefers light, unless the toggle (`ui/theme.ts`) has forced dark by setting
+ * `data-theme="dark"` on <html>. The next block is the toggle's forced-light case:
+ * same tokens, no media guard, so it wins even when the system prefers dark.
+ * Forced dark needs no rule of its own — the bare :root above already is dark, and
+ * `:not([data-theme="dark"])` here excludes it from this override.
+ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f6f5ee;
+    --card: #ffffff;
+    --fg: #17170f;
+    --muted: #4b4a3f;
+    --dim: #7a7768;
+    --accent-ink: #4d6600;
+    --border: #e4e2d4;
+    --border-strong: #d1cdb8;
+    --danger: #b33110;
+    --danger-bg: rgba(179, 49, 16, 0.08);
+    --ok: #4d6600;
+    --ok-bg: rgba(77, 102, 0, 0.08);
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f6f5ee;
+  --card: #ffffff;
+  --fg: #17170f;
+  --muted: #4b4a3f;
+  --dim: #7a7768;
+  --accent-ink: #4d6600;
+  --border: #e4e2d4;
+  --border-strong: #d1cdb8;
+  --danger: #b33110;
+  --danger-bg: rgba(179, 49, 16, 0.08);
+  --ok: #4d6600;
+  --ok-bg: rgba(77, 102, 0, 0.08);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -26,7 +76,12 @@
 body {
   margin: 0;
   font: 15px/1.6 var(--sans);
-  background: var(--bg);
+  /* !important beats the inline `style="background:…"` on <body> in index.html.
+     That inline value exists only to paint the right color before this stylesheet
+     has loaded — CSP's script-src/style-src leave no other way to do that — and an
+     inline attribute otherwise outranks any rule here, so without this the light
+     theme's body would stay stuck on the inline dark value forever. */
+  background: var(--bg) !important;
   color: var(--fg);
 }
 
@@ -46,7 +101,19 @@ header.bar {
   padding-bottom: 20px;
   border-bottom: 1px solid var(--border);
 }
-header.bar .mark { display: block; height: 24px; width: auto; }
+/* Two stacked images, not one swapped by JS: the on-dark and on-light marks trade
+   places purely by CSS, on the exact same selectors that drive the palette above,
+   so the brand mark never lags a theme change or shows the wrong variant before
+   main.ts has run. */
+header.bar .mark { position: relative; display: block; width: 20px; height: 24px; }
+header.bar .mark img { position: absolute; inset: 0; display: block; height: 24px; width: auto; }
+header.bar .mark .on-light { display: none; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) header.bar .mark .on-dark { display: none; }
+  :root:not([data-theme="dark"]) header.bar .mark .on-light { display: block; }
+}
+:root[data-theme="light"] header.bar .mark .on-dark { display: none; }
+:root[data-theme="light"] header.bar .mark .on-light { display: block; }
 /* gap: 12px is right between controls but too wide between mark and wordmark. */
 header.bar .mark + h1 { margin-left: -3px; }
 header.bar h1 {
@@ -65,6 +132,13 @@ header.bar .version {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--dim);
+}
+header.bar .theme-toggle {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 6px 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .card {
@@ -108,9 +182,9 @@ textarea {
 }
 input::placeholder, textarea::placeholder { color: var(--dim); }
 input:focus, textarea:focus {
-  outline: 1px solid var(--accent);
+  outline: 1px solid var(--accent-ink);
   outline-offset: -2px;
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
 }
 
 /* Mono metadata under a field: the description's character count, and the note that
@@ -144,7 +218,7 @@ button.secondary {
   color: var(--fg);
   border-color: var(--border-strong);
 }
-button.secondary:hover { color: var(--accent); border-color: var(--accent); }
+button.secondary:hover { color: var(--accent-ink); border-color: var(--accent-ink); }
 button:disabled { opacity: 0.45; cursor: progress; }
 button:disabled:hover { background: var(--accent); border-color: var(--accent); }
 button.secondary:disabled:hover { background: transparent; border-color: var(--border-strong); }
@@ -160,8 +234,8 @@ button.secondary:disabled:hover { background: transparent; border-color: var(--b
   border: 1px solid;
   margin-top: 14px;
 }
-.msg.error { border-color: var(--danger); color: var(--danger); background: rgba(255, 92, 43, 0.08); }
-.msg.ok { border-color: var(--ok); color: var(--ok); background: rgba(200, 245, 66, 0.08); }
+.msg.error { border-color: var(--danger); color: var(--danger); background: var(--danger-bg); }
+.msg.ok { border-color: var(--ok); color: var(--ok); background: var(--ok-bg); }
 
 ul.bookmarks, ul.tree { list-style: none; margin: 0; padding: 0; }
 
@@ -192,7 +266,7 @@ ul.bookmarks > li { padding: 14px 0; }
   text-decoration: none;
   font-weight: 700;
 }
-.bookmark a:hover { color: var(--accent); }
+.bookmark a:hover { color: var(--accent-ink); }
 /* A bookmark whose scheme is not safe to follow (javascript:, data:) renders as
    inert text, so it must not look clickable — dimmed and struck through. */
 .bookmark .blocked {
@@ -240,12 +314,12 @@ li.folder > details > summary {
   padding: 12px 0;
   cursor: pointer;
 }
-li.folder > details > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+li.folder > details > summary:focus-visible { outline: 1px solid var(--accent-ink); outline-offset: 2px; }
 li.folder .twist {
   font-family: var(--mono);
   font-size: 16px;
   line-height: 1;
-  color: var(--accent);
+  color: var(--accent-ink);
   transition: transform 0.15s ease;
 }
 /* Same idiom as the site's FAQ: the plus rotates into a cross when open. */
