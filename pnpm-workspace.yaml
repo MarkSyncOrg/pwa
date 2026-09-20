@@ -1,7 +1,11 @@
-# Build scripts pnpm is allowed to run. @marksyncorg/core now installs as a
-# prebuilt tarball from GitHub Packages, so only esbuild (vite) needs a build.
-allowBuilds:
-  esbuild: true
+# Build scripts pnpm is allowed to run: none. @marksyncorg/core installs as a
+# prebuilt tarball from GitHub Packages, and since vite 8 the bundler is rolldown,
+# which ships prebuilt binaries rather than fetching one from a postinstall script.
+# The esbuild entry that used to sit here is gone with esbuild itself. Leaving the
+# list empty is the safe default: if a dependency bump puts a package with an
+# install script back in the tree, pnpm blocks it and the build fails loudly
+# instead of running it.
+allowBuilds: {}
 # First-party package published from our own repo, so the release-age quarantine
 # (which exists to catch a compromised upstream release) buys nothing and would
 # only stall a deploy behind our own publish.
