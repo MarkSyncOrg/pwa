@@ -1,0 +1,45 @@
+version: 2
+
+# This repo consumes @marksyncorg/core from GitHub Packages, and Dependabot does not use
+# GITHUB_TOKEN for private registries: the `packages: read` in deploy-cloudflare.yml
+# governs the token handed to a workflow run, which is a different context from
+# Dependabot resolving a dependency tree of its own. Without the block below the npm runs
+# cannot resolve that package and open nothing at all.
+#
+# REQUIRED SETUP, once, by someone with admin on this repo: create a Dependabot secret
+# named DEPENDABOT_PACKAGES_TOKEN (Settings > Secrets and variables > Dependabot > New
+# repository secret) holding a token with the `read:packages` scope. The same name is
+# used in app-next, so one organization-level Dependabot secret covers both. Until it
+# exists the npm run below reports a missing secret rather than a resolution failure.
+registries:
+  github-packages:
+    type: npm-registry
+    url: https://npm.pkg.github.com
+    token: ${{secrets.DEPENDABOT_PACKAGES_TOKEN}}
+
+updates:
+  # The "npm" ecosystem also drives pnpm lockfiles.
+  - package-ecosystem: npm
+    directory: /
+    registries:
+      - github-packages
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    # Wait 4 days after a release before proposing it, so a freshly published (possibly
+    # compromised) version has time to be caught first. Unlike app-next this is not
+    # mirroring a pnpm-side `minimumReleaseAge`: there is none in pnpm-workspace.yaml
+    # here, so this cooldown is the only release-age gate this repo has.
+    cooldown:
+      default-days: 4
+    groups:
+      dev-dependencies:
+        dependency-type: development
+  # No registries here on purpose: action versions come from GitHub itself, so this run
+  # needs no credential and must keep working whether or not the secret above exists.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 4
