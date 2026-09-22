@@ -295,7 +295,7 @@ test('a javascript: bookmark in the sync payload never reaches the list', async 
   await ctx.close();
 });
 
-test('the add form rejects an unsafe URL instead of storing one that will not sync', async ({
+test('the add form rejects a bookmarklet instead of storing one that will not sync', async ({
   browser,
 }) => {
   const state: ServerState = {
@@ -318,7 +318,9 @@ test('the add form rejects an unsafe URL instead of storing one that will not sy
   }, UNSAFE_URL);
   await page.getByTestId('addSubmit').click();
 
-  await expect(page.getByTestId('addMessage')).toHaveText(/http, https, ftp and mailto/i);
+  // The message names the reason and the way out, since this address *can* be synced
+  // once the user turns the option on.
+  await expect(page.getByTestId('addMessage')).toHaveText(/sync bookmarklets/i);
   await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
 
   // The share hook rejects it too, rather than queueing it for later.
@@ -878,5 +880,75 @@ test('the CSP is served in both forms and blocks script the renderer would not',
   expect(headersFile).toContain('X-Content-Type-Options: nosniff');
   expect(headersFile).toContain('Referrer-Policy: no-referrer');
 
+  await ctx.close();
+});
+
+test('a chrome:// bookmark is carried by the sync and shown as unopenable', async ({ browser }) => {
+  // MarkSyncOrg/app-next#37: the client used to drop every local and browser-internal
+  // address on the way in and on the way out, so a browser's own bookmarks never
+  // reached the other devices. They are ordinary bookmarks now; a web app simply
+  // cannot follow one, which the row says instead of the list hiding it.
+  const state: ServerState = {
+    blob: await encryptTree([...SEEDED, { title: 'Browser bookmarks', url: 'chrome://bookmarks/' }]),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(3);
+  // Present, not a link, and not marked as excluded from the sync either.
+  await expect(page.getByRole('link', { name: 'Browser bookmarks' })).toHaveCount(0);
+  await expect(page.getByTestId('unopenableBookmark')).toHaveText('Browser bookmarks');
+  await expect(page.getByTestId('blockedBookmark')).toHaveCount(0);
+
+  // And it survives this device's own upload rather than being filtered out of it.
+  await page.getByTestId('addTitle').fill('Hacker News');
+  await page.getByTestId('addUrl').fill('https://news.ycombinator.com/');
+  await page.getByTestId('addSubmit').click();
+  await expect(page.getByTestId('addMessage')).toHaveText(/synced/i);
+
+  const uploaded = await decryptTree(state.blob);
+  expect(uploaded).toContain('chrome://bookmarks/');
+  await ctx.close();
+});
+
+test('turning on "Sync bookmarklets" uploads the one this device was holding back', async ({
+  browser,
+}) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  await seedLocalBookmark(page, 'My bookmarklet', UNSAFE_URL);
+  await page.reload();
+  // Off by default: kept here, never uploaded.
+  await expect(page.getByTestId('syncBookmarklets')).not.toBeChecked();
+  await expect(page.getByTestId('blockedBookmark')).toHaveText('My bookmarklet');
+
+  await page.getByTestId('syncBookmarklets').check();
+  await expect(page.getByTestId('bookmarkletHint')).toContainText('uploaded with everything else');
+  // Still not a link: the option widens what is synced, never what is rendered.
+  await expect(page.getByRole('link', { name: 'My bookmarklet' })).toHaveCount(0);
+  await expect(page.getByTestId('unopenableBookmark')).toHaveText('My bookmarklet');
+
+  await page.getByTestId('syncButton').click();
+  await expect
+    .poll(async () => await decryptTree(state.blob))
+    .toContain('javascript:alert(document.domain)');
+
+  // And the choice outlives a reload, since it is stored, not held in the checkbox.
+  await page.reload();
+  await expect(page.getByTestId('syncBookmarklets')).toBeChecked();
   await ctx.close();
 });

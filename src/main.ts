@@ -39,8 +39,9 @@ function readSharedFromUrl(): SharedUrl | undefined {
 
 const storage = new IndexedDbStorageArea();
 const provider = new LocalBookmarksProvider(storage);
+const store = new SyncStore(storage);
 const engine = new SyncEngine({
-  store: new SyncStore(storage),
+  store,
   provider,
   appVersion: __APP_VERSION__,
 });
@@ -49,7 +50,7 @@ const root = document.getElementById('app');
 if (!root) {
   throw new Error('Missing #app root element');
 }
-const app = new App(root, engine, provider);
+const app = new App(root, engine, provider, store);
 
 window.marksyncReceiveSharedUrl = (url, title, text) => app.receiveSharedUrl(url, title, text);
 

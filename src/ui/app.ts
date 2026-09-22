@@ -1,11 +1,14 @@
 import {
+  type BookmarkUrlPolicy,
   DESCRIPTION_MAX_LENGTH,
   formatTags,
   isSafeBookmarkUrl,
+  isSyncableBookmarkUrl,
   normalizeDescription,
   parseTags,
   type SyncEngine,
   SyncConflictError,
+  type SyncStore,
 } from '@marksyncorg/core';
 import {
   buildBookmarkTree,
@@ -135,13 +138,22 @@ function themeToggle(): HTMLElement {
 }
 
 /**
- * Rejects a URL the core would refuse to sync. `isSafeBookmarkUrl` also rejects
+ * Rejects a URL this device would refuse to sync. `isSyncableBookmarkUrl` also rejects
  * anything that is not an absolute URL, which is the check the `type="url"` input
  * gives us for free but the share hooks do not get at all.
+ *
+ * Wider than what the list will render as a link: `chrome://` and `file://` bookmarks
+ * are carried by the sync for the browsers that can open them, so saving one here is
+ * saving a real bookmark, not a broken one.
  */
-function assertSafeUrl(url: string): void {
-  if (!isSafeBookmarkUrl(url)) {
-    throw new Error('Only absolute http, https, ftp and mailto links can be saved.');
+function assertSyncableUrl(url: string, policy: BookmarkUrlPolicy): void {
+  if (!isSyncableBookmarkUrl(url, policy)) {
+    throw new Error(
+      policy.allowBookmarklets === true
+        ? 'That is not an address this device can save.'
+        : 'That is not an address this device can save. Bookmarklets (javascript: and data:) ' +
+          'need "Sync bookmarklets" turned on.',
+    );
   }
 }
 
@@ -152,35 +164,63 @@ function prettyUrl(url: string): string {
 }
 
 /**
+ * The row's title element: a link, or inert text with the reason it is not one.
+ *
+ * Three states, because there are three different things to say:
+ *
+ *  - an ordinary web address becomes an `<a href>`;
+ *  - `chrome://`, `file://` and the other local schemes are synced like anything else,
+ *    but only a browser can open them, so this shows the entry without pretending a web
+ *    app could follow it;
+ *  - a bookmarklet is inert *and* excluded from the sync while the option is off, which
+ *    is a different fact about the same row and has to read differently.
+ *
+ * The core sanitises every tree crossing a trust boundary, but the list is read straight
+ * from the local store, which is not one of those boundaries, so the render-time guard
+ * core's SECURITY.md asks for lives here. `isSafeBookmarkUrl` stays the gate on `href`
+ * whatever the sync policy is: a `javascript:` URL would otherwise execute in this
+ * origin.
+ */
+function bookmarkTitle(b: FlatBookmark, policy: BookmarkUrlPolicy): HTMLElement {
+  if (isSafeBookmarkUrl(b.url)) {
+    return el('a', { href: b.url, target: '_blank', rel: 'noopener noreferrer', title: b.url }, b.title);
+  }
+  if (isSyncableBookmarkUrl(b.url, policy)) {
+    return el(
+      'span',
+      {
+        class: 'unopenable',
+        'data-testid': 'unopenableBookmark',
+        title: `Synced, but only a browser can open this address: ${b.url}`,
+      },
+      b.title,
+    );
+  }
+  return el(
+    'span',
+    {
+      class: 'blocked',
+      'data-testid': 'blockedBookmark',
+      title: `Kept on this device but never synced: ${b.url}`,
+    },
+    b.title,
+  );
+}
+
+/**
  * One bookmark row. Search results also carry the folder path they came from.
  *
- * The core sanitises every tree crossing a trust boundary, but the list is read
- * straight from the local store, which is not one of those boundaries — so the
- * render-time guard core's SECURITY.md asks for lives here. A `javascript:` or
- * `data:` URL becomes inert text rather than an `<a href>` that would execute in
- * this origin.
- *
- * Since core 0.3.0 such an entry also survives a pull rather than being erased by
- * it, so it is a permanent resident of the list and the row has to say why it
- * looks different: excluded from the sync, not broken.
+ * An entry the sync refuses is a permanent resident of the list rather than a transient
+ * one (since core 0.3.0 it survives the destructive write a pull performs), so the row
+ * has to say why it looks different: excluded from the sync, not broken.
  */
-function bookmarkItem(b: FlatBookmark, showPath: boolean): HTMLElement {
+function bookmarkItem(b: FlatBookmark, showPath: boolean, policy: BookmarkUrlPolicy): HTMLElement {
   const item = el('li', { class: 'bookmark', 'data-testid': 'bookmarkItem' });
   if (showPath && b.path.length) {
     item.append(el('div', { class: 'crumb' }, b.path.join(' / ')));
   }
   item.append(
-    isSafeBookmarkUrl(b.url)
-      ? el('a', { href: b.url, target: '_blank', rel: 'noopener noreferrer', title: b.url }, b.title)
-      : el(
-          'span',
-          {
-            class: 'blocked',
-            'data-testid': 'blockedBookmark',
-            title: `Kept on this device but never synced — ${b.url}`,
-          },
-          b.title,
-        ),
+    bookmarkTitle(b, policy),
     el('div', { class: 'url', title: b.url }, prettyUrl(b.url)),
   );
   // Description and tags come from the sync, not from any browser: no bookmarks API
@@ -221,10 +261,18 @@ export class App {
   private suggestedFor: string | undefined;
   private suggestTimer: number | undefined;
 
+  /**
+   * What this device is willing to sync beyond the default set, read from the same
+   * settings the engine reads. Held here because it decides three things the UI owns:
+   * how a row renders, what the add form accepts, and what the toggle shows.
+   */
+  private urlPolicy: BookmarkUrlPolicy = {};
+
   constructor(
     root: HTMLElement,
     private readonly engine: SyncEngine,
     private readonly provider: LocalBookmarksProvider,
+    private readonly store: SyncStore,
   ) {
     this.root = root;
   }
@@ -232,6 +280,7 @@ export class App {
   /** Boots: shows the bookmark list if a sync is already enabled, else the login. */
   async start(share?: SharedUrl): Promise<void> {
     this.pendingShare = share;
+    await this.loadUrlPolicy();
     const status = await this.engine.getStatus();
     this.root.removeAttribute('aria-busy');
     if (status.enabled) {
@@ -240,6 +289,12 @@ export class App {
     } else {
       this.renderLogin();
     }
+  }
+
+  /** Refreshes {@link urlPolicy} from the stored settings. */
+  private async loadUrlPolicy(): Promise<void> {
+    const { syncBookmarklets } = await this.store.getSettings();
+    this.urlPolicy = { allowBookmarklets: syncBookmarklets };
   }
 
   /**
@@ -253,7 +308,8 @@ export class App {
    * step, only ever suggests (see {@link suggestFromPage}).
    */
   async receiveSharedUrl(url: string, title?: string, text?: string): Promise<void> {
-    assertSafeUrl(url);
+    await this.loadUrlPolicy();
+    assertSyncableUrl(url, this.urlPolicy);
     const share: SharedUrl = { url, title, text };
     const status = await this.engine.getStatus();
     if (!status.enabled) {
@@ -497,9 +553,55 @@ export class App {
     this.root.append(
       el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync'), versionTag(), themeToggle(), status, syncBtn, logoutBtn),
       addForm,
+      this.bookmarkletSetting(),
       el('div', { class: 'card' }, el('label', {}, 'Search'), search, countEl, listEl),
     );
     this.renderResults(listEl, countEl);
+  }
+
+  /**
+   * The one thing this device deliberately keeps out of the sync, and the switch for it.
+   *
+   * Everything else the browsers carry is synced, `chrome://` and `file://` included.
+   * Bookmarklets are not, unless this is on: they run whatever they contain in whichever
+   * context opens them, so a sync anyone else can write would otherwise be a way into
+   * every device's bookmark bar. Off by default, and it says what turning it on costs
+   * instead of hiding the trade in a tooltip.
+   */
+  private bookmarkletSetting(): HTMLElement {
+    const checkbox = el('input', {
+      type: 'checkbox',
+      id: 'syncBookmarklets',
+      'data-testid': 'syncBookmarklets',
+    }) as HTMLInputElement;
+    checkbox.checked = this.urlPolicy.allowBookmarklets === true;
+    const hint = el('div', { class: 'hint', 'data-testid': 'bookmarkletHint' });
+    const renderHint = (): void => {
+      hint.textContent = checkbox.checked
+        ? 'Bookmarklets (javascript: and data: addresses) are uploaded with everything else, ' +
+          'and this app still refuses to open them. Turn it on everywhere: a device that ' +
+          'has it off removes them from the sync the next time it uploads.'
+        : 'Bookmarklets (javascript: and data: addresses) stay on this device and are never ' +
+          'uploaded. Everything else, including chrome:// and file:// bookmarks, is synced.';
+    };
+    renderHint();
+    checkbox.addEventListener('change', () => {
+      void (async () => {
+        await this.store.setSettings({ syncBookmarklets: checkbox.checked });
+        await this.loadUrlPolicy();
+        renderHint();
+        // The rows say whether an entry is synced, so they are now out of date. The
+        // upload is not forced: the next sync sees the tree this device is willing to
+        // carry has changed and pushes it.
+        await this.refreshResults();
+      })();
+    });
+    return el(
+      'div',
+      { class: 'card setting', 'data-testid': 'bookmarkletSetting' },
+      el('label', { class: 'checkbox', for: 'syncBookmarklets' }, checkbox, 'Sync bookmarklets'),
+      hint,
+    );
   }
 
   /** Reloads bookmarks from the store and refreshes only the results region. */
@@ -543,11 +645,11 @@ export class App {
       listEl.append(el('li', { class: 'empty' }, 'No matches.'));
       return;
     }
-    listEl.append(...matches.map((b) => bookmarkItem(b, true)));
+    listEl.append(...matches.map((b) => bookmarkItem(b, true, this.urlPolicy)));
   }
 
   private renderTreeNode(node: TreeNode, depth: number): HTMLElement {
-    if (node.kind === 'bookmark') return bookmarkItem(node, false);
+    if (node.kind === 'bookmark') return bookmarkItem(node, false, this.urlPolicy);
     return this.renderFolder(node, depth);
   }
 
@@ -730,10 +832,10 @@ export class App {
     description?: string,
     tags?: string[],
   ): Promise<void> {
-    // Rejected here rather than left to the sync engine, which drops unsafe-scheme
-    // nodes from the tree it uploads without telling anyone: the bookmark would sit
-    // in the local list looking saved and never reach another device.
-    assertSafeUrl(url);
+    // Rejected here rather than left to the sync engine, which drops what this device
+    // will not carry from the tree it uploads without telling anyone: the bookmark would
+    // sit in the local list looking saved and never reach another device.
+    assertSyncableUrl(url, this.urlPolicy);
     await this.provider.addBookmark(title, url, description, tags);
     await this.pushWithLastWriteWins();
     await this.refreshResults();

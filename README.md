@@ -20,7 +20,7 @@ plain TS + DOM UI, the service worker and the manifest.
 ```
 
 `src/main.ts` wires the adapters into the `SyncEngine`; `src/ui/app.ts` is the
-framework-free view (login, list + search, add form).
+framework-free view (login, list + search, add form, bookmarklet setting).
 `src/adapters/page-metadata.ts` reads what a page says about itself, which is what
 the add form suggests as a description and tags.
 
@@ -32,15 +32,30 @@ names three things a consuming app has to handle itself; here is where each one
 lands:
 
 - **Check URLs before rendering.** The list renders from the local IndexedDB
-  store, which core never sees, so `bookmarkItem` in `src/ui/app.ts` runs
-  `isSafeBookmarkUrl` and shows an unsafe entry as inert struck-through text
-  instead of an `<a href>`. The add form and the share hooks reject the same
-  schemes up front — core would silently drop them from the uploaded tree, so a
-  bookmark accepted here would look saved and never reach another device.
+  store, which core never sees, so `bookmarkTitle` in `src/ui/app.ts` runs
+  `isSafeBookmarkUrl` and renders anything else as inert text instead of an
+  `<a href>`. Since core 0.7.0 that is a narrower question than what the sync
+  carries, so the row has three states, not two: an ordinary web address is a
+  link; a `chrome://`, `about:` or `file://` bookmark is synced like any other
+  but only a browser can open it, so it renders dimmed and says so; a
+  bookmarklet is inert *and* excluded from the sync while **Sync bookmarklets**
+  is off, which is a different fact and reads differently (struck through,
+  "kept on this device but never synced"). The add form and the share hooks
+  reject up front whatever this device will not carry (`isSyncableBookmarkUrl`,
+  with the same policy): core would silently drop it from the uploaded tree, so
+  a bookmark accepted here would look saved and never reach another device.
   Filtering is not deletion: since core 0.3.0 an entry already in the store is
   put back before the destructive write that applies a pulled tree, so it stays
   on this device indefinitely without ever being uploaded. That is why the row
   says so rather than just looking broken.
+- **Bookmarklets are opt-in, per device.** The card under the add form toggles
+  `syncBookmarklets` (core's setting, stored with the rest). Off by default:
+  `javascript:` and `data:` addresses run whatever they contain in whichever
+  context opens them, so a sync anyone else can write would otherwise be a way
+  into every device's bookmark bar. Turning it on widens what is uploaded and
+  accepted, never what is rendered as a link. It has to be on everywhere: a
+  device that has it off sanitises them out of the tree it holds and removes
+  them from the sync the next time it uploads.
 - **The storage area holds the decryption key.** `SyncInfo.passwordHash` is the
   AES key, and `IndexedDbStorageArea` is plain IndexedDB — anything with script
   access to this origin can decrypt the whole sync. That is inherited

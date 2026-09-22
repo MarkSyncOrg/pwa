@@ -17,7 +17,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@marksyncorg/core": "0.6.1"
+    "@marksyncorg/core": "0.7.0"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
