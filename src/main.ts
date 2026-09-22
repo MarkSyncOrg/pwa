@@ -1,5 +1,6 @@
 import { SyncEngine, SyncStore } from '@marksyncorg/core';
 import { IndexedDbStorageArea } from './adapters/indexeddb-storage';
+import { LastSyncStore } from './adapters/last-sync';
 import { LocalBookmarksProvider } from './adapters/local-bookmarks';
 import { App, type SharedUrl } from './ui/app';
 import { initTheme } from './ui/theme';
@@ -50,7 +51,7 @@ const root = document.getElementById('app');
 if (!root) {
   throw new Error('Missing #app root element');
 }
-const app = new App(root, engine, provider, store);
+const app = new App(root, engine, provider, store, new LastSyncStore(storage));
 
 window.marksyncReceiveSharedUrl = (url, title, text) => app.receiveSharedUrl(url, title, text);
 

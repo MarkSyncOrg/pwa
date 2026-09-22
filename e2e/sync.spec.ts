@@ -1019,7 +1019,7 @@ test('coming back to the app syncs again, but not on every flick between tabs', 
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect(page.getByRole('link', { name: 'From Elsewhere' })).toBeVisible();
   await expect(page.getByTestId('bookmarkItem')).toHaveCount(3);
-  await expect(page.getByTestId('syncStatus')).toHaveText('3 bookmarks');
+  await expect(page.getByTestId('syncStatus')).toContainText('3 bookmarks');
   await ctx.close();
 });
 
@@ -1050,5 +1050,36 @@ test('a sync arriving while the add form is being filled in leaves it alone', as
   await expect(page.getByRole('link', { name: 'From Elsewhere' })).toBeVisible();
   await expect(page.getByTestId('addTitle')).toHaveValue('Half typed');
   await expect(page.getByTestId('addUrl')).toHaveValue('https://example.net/half');
+  await ctx.close();
+});
+
+test('the header says when this device last synced, and remembers it', async ({ browser }) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+
+  // Logging in pulls the whole tree, so the device is as fresh as it gets. Today's
+  // syncs show the time alone; the full value is in the title.
+  const label = page.getByTestId('lastSync');
+  await expect(label).toHaveText(/^synced \d{1,2}:\d{2}/);
+  await expect(label).toHaveAttribute('title', /\d/);
+  await expect(page.getByTestId('syncStatus')).toContainText('2 bookmarks');
+
+  // Stored, not held in the page: a reload still knows when the last sync was.
+  await page.reload();
+  await expect(page.getByTestId('lastSync')).toHaveText(/^synced \d{1,2}:\d{2}/);
+
+  // Logging out forgets it, so the next sync ID does not inherit this one's freshness.
+  await page.getByTestId('logoutButton').click();
+  await expect(page.getByTestId('loginForm')).toBeVisible();
+  await login(page);
+  await expect(page.getByTestId('lastSync')).toHaveText(/^synced \d{1,2}:\d{2}/);
   await ctx.close();
 });

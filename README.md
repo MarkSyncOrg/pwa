@@ -91,9 +91,17 @@ and reopened. It is also an event that repeats (a tab switch, a share sheet, an 
 so an automatic sync keeps a minute away from the previous sync, manual ones included,
 and never starts while another is in flight.
 
-No sync rebuilds the view. They refresh the results region and the header count in place,
+No sync rebuilds the view. They refresh the results region and the header line in place,
 because one can now arrive while the app is sitting in the foreground and it must not
 take the add form out from under someone filling it in.
+
+The header says when this device last reached the service (`2 bookmarks · synced 09:41`,
+with the full date and time in the title, and the date in the label itself once it is not
+today's). That is the half a user cannot guess: a sync that finds nothing to do looks
+exactly like one that never ran, so a list that is quietly hours stale would otherwise
+read as a fresh one. It is this device's own timestamp, written only by a completed sync
+and dropped on logout, not `SyncStore.getLastUpdated()`, which is the service's revision
+stamp and does not move when a sync has nothing to carry.
 
 ## List view
 
