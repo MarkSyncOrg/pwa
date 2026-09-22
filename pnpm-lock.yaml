@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@marksyncorg/core':
-        specifier: 0.6.1
-        version: 0.6.1
+        specifier: 0.7.0
+        version: 0.7.0
     devDependencies:
       '@playwright/test':
         specifier: 1.63.0
@@ -557,8 +557,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@marksyncorg/core@0.6.1':
-    resolution: {integrity: sha512-qhX7pNy4QR2zVL4upEubpfu+aYx6DslNyQsNEeaBHreyChr3H8cS5aUCPwYXdws5QZnCrgWidHoHR6+Ux/OdIA==, tarball: https://npm.pkg.github.com/download/@marksyncorg/core/0.6.1/09217b5fc2018da7774a0604238bc3dae63c2ddd}
+  '@marksyncorg/core@0.7.0':
+    resolution: {integrity: sha512-eOIxk6kJUS1bp9aoEzhMedkpWmP8iCNterr6dYqleahU5dR0/xxXOJxnqP98INKJMaCFWU7wTwNpT2s4GW0UUQ==, tarball: https://npm.pkg.github.com/download/@marksyncorg/core/0.7.0/d5c7a8d3abe72b3c0f309163591a7365d0100310}
     engines: {node: '>=22', pnpm: '>=11'}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
@@ -2860,7 +2860,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@marksyncorg/core@0.6.1':
+  '@marksyncorg/core@0.7.0':
     dependencies:
       lzutf8: 0.6.3
       openapi-fetch: 0.17.0

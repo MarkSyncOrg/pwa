@@ -254,14 +254,14 @@ ul.bookmarks > li { padding: 14px 0; }
 /* Titles and URLs are truncated to a single line: a synced tree holds plenty of
    40-word titles and query-string URLs, and letting those wrap turns the list
    into a wall of text. The full value stays in the row's title attribute. */
-.bookmark a, .bookmark .blocked, .bookmark .url {
+.bookmark a, .bookmark .blocked, .bookmark .unopenable, .bookmark .url {
   display: block;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.bookmark a, .bookmark .blocked {
+.bookmark a, .bookmark .blocked, .bookmark .unopenable {
   color: var(--fg);
   text-decoration: none;
   font-weight: 700;
@@ -273,6 +273,12 @@ ul.bookmarks > li { padding: 14px 0; }
   color: var(--muted);
   text-decoration: line-through;
   cursor: not-allowed;
+}
+/* Synced, but not something a web app can follow: dimmed, and not struck through,
+   because there is nothing wrong with the entry. */
+.bookmark .unopenable {
+  color: var(--muted);
+  cursor: default;
 }
 .bookmark .url {
   font-family: var(--mono);
@@ -362,3 +368,13 @@ ul.tree ul.tree > li.empty { padding: 10px 0; text-align: left; font-size: 13px;
   .row > * { flex-basis: 100%; }
   .row > button { flex: 1 0 100%; margin-top: 4px; }
 }
+
+/* One-option settings card: the checkbox on its own line, its explanation under it. */
+.card.setting label.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+.card.setting label.checkbox input { width: auto; margin: 0; }
+.card.setting .hint { margin-top: 6px; }

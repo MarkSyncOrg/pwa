@@ -1,11 +1,14 @@
 import {
+  type BookmarkUrlPolicy,
   DESCRIPTION_MAX_LENGTH,
   formatTags,
   isSafeBookmarkUrl,
+  isSyncableBookmarkUrl,
   normalizeDescription,
   parseTags,
   type SyncEngine,
   SyncConflictError,
+  type SyncStore,
 } from '@marksyncorg/core';
 import {
   buildBookmarkTree,
@@ -27,6 +30,18 @@ const DEFAULT_SERVICE_URL = 'https://api.xbrowsersync.org';
  * rather than thirty, short enough that a paste feels immediate.
  */
 const SUGGEST_DEBOUNCE_MS = 450;
+
+/**
+ * Minimum gap between two syncs nobody asked for.
+ *
+ * On a phone the app is suspended and resumed far more often than it is closed and
+ * reopened, so returning to it is the moment a stale list is most visible. It is also a
+ * moment that repeats: a tab switch, a share sheet, an unlock. Without a floor, each of
+ * those would be a request to the service. A minute is short enough that coming back to
+ * the app effectively always refreshes it, and long enough that flicking between two tabs
+ * does not.
+ */
+const AUTO_SYNC_MIN_INTERVAL_MS = 60_000;
 
 /**
  * A URL arriving from outside the app: an Android share target, an iOS Shortcut, or the
@@ -135,13 +150,22 @@ function themeToggle(): HTMLElement {
 }
 
 /**
- * Rejects a URL the core would refuse to sync. `isSafeBookmarkUrl` also rejects
+ * Rejects a URL this device would refuse to sync. `isSyncableBookmarkUrl` also rejects
  * anything that is not an absolute URL, which is the check the `type="url"` input
  * gives us for free but the share hooks do not get at all.
+ *
+ * Wider than what the list will render as a link: `chrome://` and `file://` bookmarks
+ * are carried by the sync for the browsers that can open them, so saving one here is
+ * saving a real bookmark, not a broken one.
  */
-function assertSafeUrl(url: string): void {
-  if (!isSafeBookmarkUrl(url)) {
-    throw new Error('Only absolute http, https, ftp and mailto links can be saved.');
+function assertSyncableUrl(url: string, policy: BookmarkUrlPolicy): void {
+  if (!isSyncableBookmarkUrl(url, policy)) {
+    throw new Error(
+      policy.allowBookmarklets === true
+        ? 'That is not an address this device can save.'
+        : 'That is not an address this device can save. Bookmarklets (javascript: and data:) ' +
+          'need "Sync bookmarklets" turned on.',
+    );
   }
 }
 
@@ -152,35 +176,63 @@ function prettyUrl(url: string): string {
 }
 
 /**
+ * The row's title element: a link, or inert text with the reason it is not one.
+ *
+ * Three states, because there are three different things to say:
+ *
+ *  - an ordinary web address becomes an `<a href>`;
+ *  - `chrome://`, `file://` and the other local schemes are synced like anything else,
+ *    but only a browser can open them, so this shows the entry without pretending a web
+ *    app could follow it;
+ *  - a bookmarklet is inert *and* excluded from the sync while the option is off, which
+ *    is a different fact about the same row and has to read differently.
+ *
+ * The core sanitises every tree crossing a trust boundary, but the list is read straight
+ * from the local store, which is not one of those boundaries, so the render-time guard
+ * core's SECURITY.md asks for lives here. `isSafeBookmarkUrl` stays the gate on `href`
+ * whatever the sync policy is: a `javascript:` URL would otherwise execute in this
+ * origin.
+ */
+function bookmarkTitle(b: FlatBookmark, policy: BookmarkUrlPolicy): HTMLElement {
+  if (isSafeBookmarkUrl(b.url)) {
+    return el('a', { href: b.url, target: '_blank', rel: 'noopener noreferrer', title: b.url }, b.title);
+  }
+  if (isSyncableBookmarkUrl(b.url, policy)) {
+    return el(
+      'span',
+      {
+        class: 'unopenable',
+        'data-testid': 'unopenableBookmark',
+        title: `Synced, but only a browser can open this address: ${b.url}`,
+      },
+      b.title,
+    );
+  }
+  return el(
+    'span',
+    {
+      class: 'blocked',
+      'data-testid': 'blockedBookmark',
+      title: `Kept on this device but never synced: ${b.url}`,
+    },
+    b.title,
+  );
+}
+
+/**
  * One bookmark row. Search results also carry the folder path they came from.
  *
- * The core sanitises every tree crossing a trust boundary, but the list is read
- * straight from the local store, which is not one of those boundaries — so the
- * render-time guard core's SECURITY.md asks for lives here. A `javascript:` or
- * `data:` URL becomes inert text rather than an `<a href>` that would execute in
- * this origin.
- *
- * Since core 0.3.0 such an entry also survives a pull rather than being erased by
- * it, so it is a permanent resident of the list and the row has to say why it
- * looks different: excluded from the sync, not broken.
+ * An entry the sync refuses is a permanent resident of the list rather than a transient
+ * one (since core 0.3.0 it survives the destructive write a pull performs), so the row
+ * has to say why it looks different: excluded from the sync, not broken.
  */
-function bookmarkItem(b: FlatBookmark, showPath: boolean): HTMLElement {
+function bookmarkItem(b: FlatBookmark, showPath: boolean, policy: BookmarkUrlPolicy): HTMLElement {
   const item = el('li', { class: 'bookmark', 'data-testid': 'bookmarkItem' });
   if (showPath && b.path.length) {
     item.append(el('div', { class: 'crumb' }, b.path.join(' / ')));
   }
   item.append(
-    isSafeBookmarkUrl(b.url)
-      ? el('a', { href: b.url, target: '_blank', rel: 'noopener noreferrer', title: b.url }, b.title)
-      : el(
-          'span',
-          {
-            class: 'blocked',
-            'data-testid': 'blockedBookmark',
-            title: `Kept on this device but never synced — ${b.url}`,
-          },
-          b.title,
-        ),
+    bookmarkTitle(b, policy),
     el('div', { class: 'url', title: b.url }, prettyUrl(b.url)),
   );
   // Description and tags come from the sync, not from any browser: no bookmarks API
@@ -211,6 +263,12 @@ export class App {
   // list without rebuilding (and wiping) the add form and its status message.
   private listEl: HTMLElement | undefined;
   private countEl: HTMLElement | undefined;
+  private statusEl: HTMLElement | undefined;
+  private syncBtn: HTMLButtonElement | undefined;
+  /** When the last sync started, so the automatic ones keep their distance. */
+  private lastSyncAt = 0;
+  /** Guards against a second sync starting on top of one already in flight. */
+  private syncing = false;
   private addMsgEl: HTMLElement | undefined;
   private addFields: AddFormFields | undefined;
   // The URL a suggestion has already been attempted for. Blurring the URL field
@@ -221,10 +279,18 @@ export class App {
   private suggestedFor: string | undefined;
   private suggestTimer: number | undefined;
 
+  /**
+   * What this device is willing to sync beyond the default set, read from the same
+   * settings the engine reads. Held here because it decides three things the UI owns:
+   * how a row renders, what the add form accepts, and what the toggle shows.
+   */
+  private urlPolicy: BookmarkUrlPolicy = {};
+
   constructor(
     root: HTMLElement,
     private readonly engine: SyncEngine,
     private readonly provider: LocalBookmarksProvider,
+    private readonly store: SyncStore,
   ) {
     this.root = root;
   }
@@ -232,14 +298,81 @@ export class App {
   /** Boots: shows the bookmark list if a sync is already enabled, else the login. */
   async start(share?: SharedUrl): Promise<void> {
     this.pendingShare = share;
+    this.watchForeground();
+    await this.loadUrlPolicy();
     const status = await this.engine.getStatus();
     this.root.removeAttribute('aria-busy');
     if (status.enabled) {
       await this.loadAndRenderList();
-      await this.flushPendingShare();
+      const shared = await this.flushPendingShare();
+      if (!shared) {
+        await this.syncOnOpen();
+      }
     } else {
       this.renderLogin();
     }
+  }
+
+  /**
+   * Syncs once, on the way in.
+   *
+   * Deliberately after the first render rather than before it: the store is the source
+   * the list draws from, and it is already on disk, so the bookmarks are on screen
+   * before the network is touched. A device that opens the app offline, or against a
+   * service that is down, still sees its bookmarks and simply does not get an update,
+   * which is why the failure is silent here and noisy nowhere.
+   *
+   * The caller skips it when a share arrived with the launch: that path pushes the new
+   * bookmark and reconciles as part of saving it, so this would be the same round trip
+   * a second time.
+   */
+  private async syncOnOpen(): Promise<void> {
+    await this.autoSync();
+  }
+
+  /**
+   * Syncs again whenever the app comes back to the foreground.
+   *
+   * Registered once, for the life of the page, rather than per render: the listener
+   * outlives a logout, and {@link autoSync} is the one that decides whether there is
+   * anything to sync against.
+   *
+   * `visibilitychange` is the event a suspended PWA actually gets back on: `focus` misses
+   * a resume that restores the app without focusing a control, and `pageshow` only fires
+   * for a full load or a back/forward restore.
+   */
+  private watchForeground(): void {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        void this.autoSync();
+      }
+    });
+  }
+
+  /**
+   * A sync nobody asked for: on open, and on every return to the foreground.
+   *
+   * Three things keep it from being a nuisance. It does nothing while the list is not on
+   * screen, which is how it stays out of the login form's way and stops after a logout.
+   * It does nothing while another sync is in flight, so a resume during a slow one does
+   * not queue a second. And it keeps {@link AUTO_SYNC_MIN_INTERVAL_MS} away from the
+   * previous sync, manual ones included, so flicking between two tabs is not a stream of
+   * requests.
+   */
+  private async autoSync(): Promise<void> {
+    if (!this.listEl || this.syncing) {
+      return;
+    }
+    if (Date.now() - this.lastSyncAt < AUTO_SYNC_MIN_INTERVAL_MS) {
+      return;
+    }
+    await this.doSync({ silent: true });
+  }
+
+  /** Refreshes {@link urlPolicy} from the stored settings. */
+  private async loadUrlPolicy(): Promise<void> {
+    const { syncBookmarklets } = await this.store.getSettings();
+    this.urlPolicy = { allowBookmarklets: syncBookmarklets };
   }
 
   /**
@@ -253,7 +386,8 @@ export class App {
    * step, only ever suggests (see {@link suggestFromPage}).
    */
   async receiveSharedUrl(url: string, title?: string, text?: string): Promise<void> {
-    assertSafeUrl(url);
+    await this.loadUrlPolicy();
+    assertSyncableUrl(url, this.urlPolicy);
     const share: SharedUrl = { url, title, text };
     const status = await this.engine.getStatus();
     if (!status.enabled) {
@@ -268,10 +402,10 @@ export class App {
    * runs on the boot path: a rejected URL must surface as a message, not as an
    * exception that leaves the app half-rendered.
    */
-  private async flushPendingShare(): Promise<void> {
+  private async flushPendingShare(): Promise<boolean> {
     const share = this.pendingShare;
     if (!share) {
-      return;
+      return false;
     }
     this.pendingShare = undefined;
     try {
@@ -279,6 +413,9 @@ export class App {
     } catch (err) {
       this.reportAddError(err);
     }
+    // Attempted either way: a share that failed to save has already reported why, and
+    // syncing on top of it would only replace that message with a fresh render.
+    return true;
   }
 
   /**
@@ -314,6 +451,8 @@ export class App {
     // in. The pending debounce is cancelled for the same reason.
     this.addMsgEl = undefined;
     this.addFields = undefined;
+    this.statusEl = undefined;
+    this.syncBtn = undefined;
     if (this.suggestTimer !== undefined) {
       clearTimeout(this.suggestTimer);
       this.suggestTimer = undefined;
@@ -400,9 +539,11 @@ export class App {
     if (this.listEl) this.captureExpansion(this.listEl);
     this.clear();
     const status = el('span', { class: 'status', 'data-testid': 'syncStatus' }, `${this.bookmarks.length} bookmarks`);
+    this.statusEl = status;
     const syncBtn = el('button', { class: 'secondary', 'data-testid': 'syncButton' }, 'Sync');
     const logoutBtn = el('button', { class: 'secondary', 'data-testid': 'logoutButton' }, 'Log out');
-    syncBtn.addEventListener('click', () => void this.doSync(syncBtn));
+    this.syncBtn = syncBtn;
+    syncBtn.addEventListener('click', () => void this.doSync());
     logoutBtn.addEventListener('click', () => void this.logout());
 
     // Add form. Description and tags are here for the same reason they are in the
@@ -497,9 +638,55 @@ export class App {
     this.root.append(
       el('header', { class: 'bar' }, brandMark(), el('h1', {}, 'MarkSync'), versionTag(), themeToggle(), status, syncBtn, logoutBtn),
       addForm,
+      this.bookmarkletSetting(),
       el('div', { class: 'card' }, el('label', {}, 'Search'), search, countEl, listEl),
     );
     this.renderResults(listEl, countEl);
+  }
+
+  /**
+   * The one thing this device deliberately keeps out of the sync, and the switch for it.
+   *
+   * Everything else the browsers carry is synced, `chrome://` and `file://` included.
+   * Bookmarklets are not, unless this is on: they run whatever they contain in whichever
+   * context opens them, so a sync anyone else can write would otherwise be a way into
+   * every device's bookmark bar. Off by default, and it says what turning it on costs
+   * instead of hiding the trade in a tooltip.
+   */
+  private bookmarkletSetting(): HTMLElement {
+    const checkbox = el('input', {
+      type: 'checkbox',
+      id: 'syncBookmarklets',
+      'data-testid': 'syncBookmarklets',
+    }) as HTMLInputElement;
+    checkbox.checked = this.urlPolicy.allowBookmarklets === true;
+    const hint = el('div', { class: 'hint', 'data-testid': 'bookmarkletHint' });
+    const renderHint = (): void => {
+      hint.textContent = checkbox.checked
+        ? 'Bookmarklets (javascript: and data: addresses) are uploaded with everything else, ' +
+          'and this app still refuses to open them. Turn it on everywhere: a device that ' +
+          'has it off removes them from the sync the next time it uploads.'
+        : 'Bookmarklets (javascript: and data: addresses) stay on this device and are never ' +
+          'uploaded. Everything else, including chrome:// and file:// bookmarks, is synced.';
+    };
+    renderHint();
+    checkbox.addEventListener('change', () => {
+      void (async () => {
+        await this.store.setSettings({ syncBookmarklets: checkbox.checked });
+        await this.loadUrlPolicy();
+        renderHint();
+        // The rows say whether an entry is synced, so they are now out of date. The
+        // upload is not forced: the next sync sees the tree this device is willing to
+        // carry has changed and pushes it.
+        await this.refreshResults();
+      })();
+    });
+    return el(
+      'div',
+      { class: 'card setting', 'data-testid': 'bookmarkletSetting' },
+      el('label', { class: 'checkbox', for: 'syncBookmarklets' }, checkbox, 'Sync bookmarklets'),
+      hint,
+    );
   }
 
   /** Reloads bookmarks from the store and refreshes only the results region. */
@@ -507,6 +694,9 @@ export class App {
     await this.loadBookmarks();
     if (this.listEl && this.countEl) {
       this.renderResults(this.listEl, this.countEl);
+      if (this.statusEl) {
+        this.statusEl.textContent = `${this.bookmarks.length} bookmarks`;
+      }
     } else {
       this.renderList();
     }
@@ -543,11 +733,11 @@ export class App {
       listEl.append(el('li', { class: 'empty' }, 'No matches.'));
       return;
     }
-    listEl.append(...matches.map((b) => bookmarkItem(b, true)));
+    listEl.append(...matches.map((b) => bookmarkItem(b, true, this.urlPolicy)));
   }
 
   private renderTreeNode(node: TreeNode, depth: number): HTMLElement {
-    if (node.kind === 'bookmark') return bookmarkItem(node, false);
+    if (node.kind === 'bookmark') return bookmarkItem(node, false, this.urlPolicy);
     return this.renderFolder(node, depth);
   }
 
@@ -730,28 +920,55 @@ export class App {
     description?: string,
     tags?: string[],
   ): Promise<void> {
-    // Rejected here rather than left to the sync engine, which drops unsafe-scheme
-    // nodes from the tree it uploads without telling anyone: the bookmark would sit
-    // in the local list looking saved and never reach another device.
-    assertSafeUrl(url);
+    // Rejected here rather than left to the sync engine, which drops what this device
+    // will not carry from the tree it uploads without telling anyone: the bookmark would
+    // sit in the local list looking saved and never reach another device.
+    assertSyncableUrl(url, this.urlPolicy);
     await this.provider.addBookmark(title, url, description, tags);
     await this.pushWithLastWriteWins();
     await this.refreshResults();
   }
 
-  private async doSync(btn: HTMLButtonElement): Promise<void> {
-    btn.disabled = true;
-    btn.textContent = 'Syncing…';
+  /**
+   * Reconciles with the service and redraws the list.
+   *
+   * `silent` is for the sync the app runs on open, where a failure is an ordinary
+   * outcome (offline, service down) and there is nothing for the user to do about it.
+   * A failure never discards what is on screen either way: the list is already showing
+   * the local store, so only the button goes back to how it was.
+   */
+  private async doSync({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+    const btn = this.syncBtn;
+    this.syncing = true;
+    // Taken at the start, so a slow sync holds the automatic ones off for its own
+    // duration too rather than letting one fire the moment it finishes.
+    this.lastSyncAt = Date.now();
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Syncing…';
+    }
     try {
-      await this.engine.sync();
-      await this.loadAndRenderList();
-    } catch (err) {
-      if (err instanceof SyncConflictError) {
+      try {
+        await this.engine.sync();
+      } catch (err) {
+        if (!(err instanceof SyncConflictError)) {
+          throw err;
+        }
         await this.engine.forcePull();
-        await this.loadAndRenderList();
-      } else {
+      }
+      // Only the results region: a sync must not take the add form out from under
+      // someone who is filling it in, which is a real risk now that one can arrive on
+      // its own while the app sits in the foreground.
+      await this.refreshResults();
+    } catch (err) {
+      if (!silent) {
         console.error(err);
-        this.renderList();
+      }
+    } finally {
+      this.syncing = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Sync';
       }
     }
   }
