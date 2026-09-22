@@ -18,6 +18,7 @@ import {
   type TreeFolder,
   type TreeNode,
 } from '../adapters/local-bookmarks';
+import { LastSyncStore } from '../adapters/last-sync';
 import { readPageMetadata } from '../adapters/page-metadata';
 import { cycleTheme, getThemePreference, type ThemePreference } from './theme';
 import './styles.css';
@@ -169,6 +170,29 @@ function assertSyncableUrl(url: string, policy: BookmarkUrlPolicy): void {
   }
 }
 
+/**
+ * "synced 09:41" for today, "synced 21 Sep, 18:03" for anything older.
+ *
+ * The time alone is what a user checks against ("is this from before I added it on the
+ * laptop?"), and for the common case, a device synced minutes ago, the date would be
+ * noise in a header that already carries five things. The full value is in the element's
+ * title either way.
+ */
+function lastSyncLabel(at: string | undefined, now = new Date()): string {
+  if (!at) {
+    return 'never synced';
+  }
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) {
+    return 'never synced';
+  }
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  if (date.toDateString() === now.toDateString()) {
+    return `synced ${time}`;
+  }
+  return `synced ${date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, ${time}`;
+}
+
 // Long URLs are truncated to one line by CSS; dropping the scheme and any
 // trailing slash first spends that line on the part that identifies the page.
 function prettyUrl(url: string): string {
@@ -264,9 +288,11 @@ export class App {
   private listEl: HTMLElement | undefined;
   private countEl: HTMLElement | undefined;
   private statusEl: HTMLElement | undefined;
+  /** ISO timestamp of this device's last completed sync, as the header last read it. */
+  private lastSync: string | undefined;
   private syncBtn: HTMLButtonElement | undefined;
   /** When the last sync started, so the automatic ones keep their distance. */
-  private lastSyncAt = 0;
+  private lastSyncStartedAt = 0;
   /** Guards against a second sync starting on top of one already in flight. */
   private syncing = false;
   private addMsgEl: HTMLElement | undefined;
@@ -291,6 +317,7 @@ export class App {
     private readonly engine: SyncEngine,
     private readonly provider: LocalBookmarksProvider,
     private readonly store: SyncStore,
+    private readonly lastSyncStore: LastSyncStore,
   ) {
     this.root = root;
   }
@@ -299,6 +326,7 @@ export class App {
   async start(share?: SharedUrl): Promise<void> {
     this.pendingShare = share;
     this.watchForeground();
+    this.lastSync = await this.lastSyncStore.get();
     await this.loadUrlPolicy();
     const status = await this.engine.getStatus();
     this.root.removeAttribute('aria-busy');
@@ -363,7 +391,7 @@ export class App {
     if (!this.listEl || this.syncing) {
       return;
     }
-    if (Date.now() - this.lastSyncAt < AUTO_SYNC_MIN_INTERVAL_MS) {
+    if (Date.now() - this.lastSyncStartedAt < AUTO_SYNC_MIN_INTERVAL_MS) {
       return;
     }
     await this.doSync({ silent: true });
@@ -514,6 +542,8 @@ export class App {
     submit.textContent = 'Logging in…';
     try {
       await this.engine.enableExistingSync(serviceUrl, syncId, password);
+      // Joining pulls the whole tree, so the device is as fresh as it will ever be.
+      await this.recordSync();
       await this.loadAndRenderList();
       await this.flushPendingShare();
     } catch (err) {
@@ -538,8 +568,9 @@ export class App {
   private renderList(): void {
     if (this.listEl) this.captureExpansion(this.listEl);
     this.clear();
-    const status = el('span', { class: 'status', 'data-testid': 'syncStatus' }, `${this.bookmarks.length} bookmarks`);
+    const status = el('span', { class: 'status', 'data-testid': 'syncStatus' });
     this.statusEl = status;
+    this.renderStatus();
     const syncBtn = el('button', { class: 'secondary', 'data-testid': 'syncButton' }, 'Sync');
     const logoutBtn = el('button', { class: 'secondary', 'data-testid': 'logoutButton' }, 'Log out');
     this.syncBtn = syncBtn;
@@ -694,9 +725,7 @@ export class App {
     await this.loadBookmarks();
     if (this.listEl && this.countEl) {
       this.renderResults(this.listEl, this.countEl);
-      if (this.statusEl) {
-        this.statusEl.textContent = `${this.bookmarks.length} bookmarks`;
-      }
+      this.renderStatus();
     } else {
       this.renderList();
     }
@@ -787,6 +816,35 @@ export class App {
   }
 
   /** Updates the character counter under the description field. */
+  /**
+   * The header's one line about the sync: how much is in the list, and when this device
+   * last reached the service.
+   *
+   * The second half is the one that is hard to guess from the screen. Syncing happens on
+   * its own now, on open and on every return to the foreground, and a sync that finds
+   * nothing to do looks exactly like one that never ran, so a list that is quietly hours
+   * stale reads as a fresh one. The timestamp is what tells them apart.
+   */
+  private renderStatus(): void {
+    const status = this.statusEl;
+    if (!status) {
+      return;
+    }
+    const when = el('span', { 'data-testid': 'lastSync' }, lastSyncLabel(this.lastSync));
+    if (this.lastSync) {
+      // The label drops the date for a sync from today, so the exact value lives here.
+      when.title = new Date(this.lastSync).toLocaleString();
+    }
+    status.replaceChildren(`${this.bookmarks.length} bookmarks · `, when);
+  }
+
+  /** Records a completed sync, for the header and for the next visit. */
+  private async recordSync(): Promise<void> {
+    const at = new Date();
+    this.lastSync = at.toISOString();
+    await this.lastSyncStore.set(at);
+  }
+
   private renderDescriptionCount(): void {
     const fields = this.addFields;
     if (!fields) {
@@ -942,7 +1000,7 @@ export class App {
     this.syncing = true;
     // Taken at the start, so a slow sync holds the automatic ones off for its own
     // duration too rather than letting one fire the moment it finishes.
-    this.lastSyncAt = Date.now();
+    this.lastSyncStartedAt = Date.now();
     if (btn) {
       btn.disabled = true;
       btn.textContent = 'Syncing…';
@@ -956,6 +1014,7 @@ export class App {
         }
         await this.engine.forcePull();
       }
+      await this.recordSync();
       // Only the results region: a sync must not take the add form out from under
       // someone who is filling it in, which is a real risk now that one can arrive on
       // its own while the app sits in the foreground.
@@ -988,6 +1047,8 @@ export class App {
 
   private async logout(): Promise<void> {
     await this.engine.disable();
+    await this.lastSyncStore.clear();
+    this.lastSync = undefined;
     await this.provider.setBookmarks([]);
     this.bookmarks = [];
     this.query = '';
