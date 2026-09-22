@@ -251,6 +251,7 @@ export class App {
   // list without rebuilding (and wiping) the add form and its status message.
   private listEl: HTMLElement | undefined;
   private countEl: HTMLElement | undefined;
+  private syncBtn: HTMLButtonElement | undefined;
   private addMsgEl: HTMLElement | undefined;
   private addFields: AddFormFields | undefined;
   // The URL a suggestion has already been attempted for. Blurring the URL field
@@ -285,10 +286,30 @@ export class App {
     this.root.removeAttribute('aria-busy');
     if (status.enabled) {
       await this.loadAndRenderList();
-      await this.flushPendingShare();
+      const shared = await this.flushPendingShare();
+      if (!shared) {
+        await this.syncOnOpen();
+      }
     } else {
       this.renderLogin();
     }
+  }
+
+  /**
+   * Syncs once, on the way in.
+   *
+   * Deliberately after the first render rather than before it: the store is the source
+   * the list draws from, and it is already on disk, so the bookmarks are on screen
+   * before the network is touched. A device that opens the app offline, or against a
+   * service that is down, still sees its bookmarks and simply does not get an update,
+   * which is why the failure is silent here and noisy nowhere.
+   *
+   * The caller skips it when a share arrived with the launch: that path pushes the new
+   * bookmark and reconciles as part of saving it, so this would be the same round trip
+   * a second time.
+   */
+  private async syncOnOpen(): Promise<void> {
+    await this.doSync({ silent: true });
   }
 
   /** Refreshes {@link urlPolicy} from the stored settings. */
@@ -324,10 +345,10 @@ export class App {
    * runs on the boot path: a rejected URL must surface as a message, not as an
    * exception that leaves the app half-rendered.
    */
-  private async flushPendingShare(): Promise<void> {
+  private async flushPendingShare(): Promise<boolean> {
     const share = this.pendingShare;
     if (!share) {
-      return;
+      return false;
     }
     this.pendingShare = undefined;
     try {
@@ -335,6 +356,9 @@ export class App {
     } catch (err) {
       this.reportAddError(err);
     }
+    // Attempted either way: a share that failed to save has already reported why, and
+    // syncing on top of it would only replace that message with a fresh render.
+    return true;
   }
 
   /**
@@ -370,6 +394,7 @@ export class App {
     // in. The pending debounce is cancelled for the same reason.
     this.addMsgEl = undefined;
     this.addFields = undefined;
+    this.syncBtn = undefined;
     if (this.suggestTimer !== undefined) {
       clearTimeout(this.suggestTimer);
       this.suggestTimer = undefined;
@@ -458,7 +483,8 @@ export class App {
     const status = el('span', { class: 'status', 'data-testid': 'syncStatus' }, `${this.bookmarks.length} bookmarks`);
     const syncBtn = el('button', { class: 'secondary', 'data-testid': 'syncButton' }, 'Sync');
     const logoutBtn = el('button', { class: 'secondary', 'data-testid': 'logoutButton' }, 'Log out');
-    syncBtn.addEventListener('click', () => void this.doSync(syncBtn));
+    this.syncBtn = syncBtn;
+    syncBtn.addEventListener('click', () => void this.doSync());
     logoutBtn.addEventListener('click', () => void this.logout());
 
     // Add form. Description and tags are here for the same reason they are in the
@@ -841,20 +867,38 @@ export class App {
     await this.refreshResults();
   }
 
-  private async doSync(btn: HTMLButtonElement): Promise<void> {
-    btn.disabled = true;
-    btn.textContent = 'Syncing…';
+  /**
+   * Reconciles with the service and redraws the list.
+   *
+   * `silent` is for the sync the app runs on open, where a failure is an ordinary
+   * outcome (offline, service down) and there is nothing for the user to do about it.
+   * A failure never discards what is on screen either way: the list is already showing
+   * the local store, so only the button goes back to how it was.
+   */
+  private async doSync({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+    const btn = this.syncBtn;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Syncing…';
+    }
     try {
       await this.engine.sync();
+      // Rebuilds the header, so the button comes back with it.
       await this.loadAndRenderList();
+      return;
     } catch (err) {
       if (err instanceof SyncConflictError) {
         await this.engine.forcePull();
         await this.loadAndRenderList();
-      } else {
-        console.error(err);
-        this.renderList();
+        return;
       }
+      if (!silent) {
+        console.error(err);
+      }
+    }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Sync';
     }
   }
 

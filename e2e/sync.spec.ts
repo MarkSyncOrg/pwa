@@ -952,3 +952,38 @@ test('turning on "Sync bookmarklets" uploads the one this device was holding bac
   await expect(page.getByTestId('syncBookmarklets')).toBeChecked();
   await ctx.close();
 });
+
+test('opening the app syncs without being asked, and offline it just shows what it has', async ({
+  browser,
+}) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.goto('/');
+  await login(page);
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+
+  // Another device pushes while this one is closed.
+  state.blob = await encryptTree([...SEEDED, { title: 'From Elsewhere', url: 'https://example.org/' }]);
+  state.lastUpdated = new Date('2024-06-01T00:00:00.000Z').toISOString();
+
+  // Reopening is enough: no click on Sync anywhere in this test.
+  await page.reload();
+  await expect(page.getByRole('link', { name: 'From Elsewhere' })).toBeVisible();
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(3);
+
+  // And the sync that runs on open must never be the thing that breaks a cold start:
+  // offline it fails, silently, over a list that is already on screen from the store.
+  await page.evaluate(() => navigator.serviceWorker.ready.then(() => undefined));
+  await ctx.setOffline(true);
+  await page.reload();
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(3);
+  await expect(page.getByTestId('syncButton')).toHaveText('Sync');
+  await expect(page.getByTestId('syncButton')).toBeEnabled();
+  await ctx.close();
+});

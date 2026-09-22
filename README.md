@@ -71,6 +71,16 @@ the service URL must be `https` with no query, fragment or embedded credentials,
 and the sync ID must be 32 lowercase hex characters (checked before the
 250k-iteration key derivation, so a typo fails immediately).
 
+## Syncing
+
+The app reconciles with the service once on open, and then whenever the Sync button is
+pressed. The automatic one runs **after** the list is on screen, never before: the store
+is on disk, so the bookmarks are drawn from it first and the network is touched
+afterwards. That ordering is what makes a cold start offline unremarkable, and it is why
+that sync fails silently: a device with no connection, or a service that is down, still
+gets its list and simply does not get an update. A launch that carries a share skips it,
+since saving the shared bookmark already pushes and reconciles.
+
 ## List view
 
 Browsing shows the container tree as expandable folders (native `<details>`,
