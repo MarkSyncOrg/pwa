@@ -73,13 +73,27 @@ and the sync ID must be 32 lowercase hex characters (checked before the
 
 ## Syncing
 
-The app reconciles with the service once on open, and then whenever the Sync button is
-pressed. The automatic one runs **after** the list is on screen, never before: the store
-is on disk, so the bookmarks are drawn from it first and the network is touched
-afterwards. That ordering is what makes a cold start offline unremarkable, and it is why
-that sync fails silently: a device with no connection, or a service that is down, still
-gets its list and simply does not get an update. A launch that carries a share skips it,
-since saving the shared bookmark already pushes and reconciles.
+The app reconciles with the service on open, again whenever it comes back to the
+foreground, and whenever the Sync button is pressed.
+
+The automatic ones run **after** the list is on screen, never before: the store is on
+disk, so the bookmarks are drawn from it first and the network is touched afterwards.
+That ordering is what makes a cold start offline unremarkable, and it is why they fail
+silently: a device with no connection, or a service that is down, still gets its list and
+simply does not get an update. A launch that carries a share skips the first one, since
+saving the shared bookmark already pushes and reconciles.
+
+The foreground one listens on `visibilitychange`, the event a suspended PWA actually gets
+back on, since `focus` misses a resume that restores the app without focusing a control
+and `pageshow` only fires for a full load or a back/forward restore. On a phone this is
+the one that matters: the app is suspended and resumed far more often than it is closed
+and reopened. It is also an event that repeats (a tab switch, a share sheet, an unlock),
+so an automatic sync keeps a minute away from the previous sync, manual ones included,
+and never starts while another is in flight.
+
+No sync rebuilds the view. They refresh the results region and the header count in place,
+because one can now arrive while the app is sitting in the foreground and it must not
+take the add form out from under someone filling it in.
 
 ## List view
 

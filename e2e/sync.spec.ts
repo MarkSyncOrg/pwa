@@ -987,3 +987,68 @@ test('opening the app syncs without being asked, and offline it just shows what 
   await expect(page.getByTestId('syncButton')).toBeEnabled();
   await ctx.close();
 });
+
+test('coming back to the app syncs again, but not on every flick between tabs', async ({
+  browser,
+}) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  // A fake clock, because the throttle below is the behaviour under test and waiting a
+  // real minute for it is not a test anyone would run.
+  await page.clock.install();
+  await page.goto('/');
+  await login(page);
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+
+  // Another device pushes while this one sits in the background.
+  state.blob = await encryptTree([...SEEDED, { title: 'From Elsewhere', url: 'https://example.org/' }]);
+  state.lastUpdated = new Date('2024-06-01T00:00:00.000Z').toISOString();
+
+  // Straight back: too soon after the sync that ran on open, so nothing is fetched.
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(2);
+
+  // A minute later it is a return worth refreshing for.
+  await page.clock.fastForward(61_000);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(page.getByRole('link', { name: 'From Elsewhere' })).toBeVisible();
+  await expect(page.getByTestId('bookmarkItem')).toHaveCount(3);
+  await expect(page.getByTestId('syncStatus')).toHaveText('3 bookmarks');
+  await ctx.close();
+});
+
+test('a sync arriving while the add form is being filled in leaves it alone', async ({
+  browser,
+}) => {
+  const state: ServerState = {
+    blob: await encryptTree(SEEDED),
+    lastUpdated: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+    version: '1.1.13',
+  };
+  const ctx = await browser.newContext();
+  await installApiMock(ctx, state);
+  const page = await ctx.newPage();
+  await page.clock.install();
+  await page.goto('/');
+  await login(page);
+
+  // Half-written bookmark, the state a background sync used to destroy.
+  await page.getByTestId('addTitle').fill('Half typed');
+  await page.getByTestId('addUrl').fill('https://example.net/half');
+
+  state.blob = await encryptTree([...SEEDED, { title: 'From Elsewhere', url: 'https://example.org/' }]);
+  state.lastUpdated = new Date('2024-06-01T00:00:00.000Z').toISOString();
+  await page.clock.fastForward(61_000);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+
+  await expect(page.getByRole('link', { name: 'From Elsewhere' })).toBeVisible();
+  await expect(page.getByTestId('addTitle')).toHaveValue('Half typed');
+  await expect(page.getByTestId('addUrl')).toHaveValue('https://example.net/half');
+  await ctx.close();
+});

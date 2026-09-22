@@ -32,6 +32,18 @@ const DEFAULT_SERVICE_URL = 'https://api.xbrowsersync.org';
 const SUGGEST_DEBOUNCE_MS = 450;
 
 /**
+ * Minimum gap between two syncs nobody asked for.
+ *
+ * On a phone the app is suspended and resumed far more often than it is closed and
+ * reopened, so returning to it is the moment a stale list is most visible. It is also a
+ * moment that repeats: a tab switch, a share sheet, an unlock. Without a floor, each of
+ * those would be a request to the service. A minute is short enough that coming back to
+ * the app effectively always refreshes it, and long enough that flicking between two tabs
+ * does not.
+ */
+const AUTO_SYNC_MIN_INTERVAL_MS = 60_000;
+
+/**
  * A URL arriving from outside the app: an Android share target, an iOS Shortcut, or the
  * native Share Extension.
  *
@@ -251,7 +263,12 @@ export class App {
   // list without rebuilding (and wiping) the add form and its status message.
   private listEl: HTMLElement | undefined;
   private countEl: HTMLElement | undefined;
+  private statusEl: HTMLElement | undefined;
   private syncBtn: HTMLButtonElement | undefined;
+  /** When the last sync started, so the automatic ones keep their distance. */
+  private lastSyncAt = 0;
+  /** Guards against a second sync starting on top of one already in flight. */
+  private syncing = false;
   private addMsgEl: HTMLElement | undefined;
   private addFields: AddFormFields | undefined;
   // The URL a suggestion has already been attempted for. Blurring the URL field
@@ -281,6 +298,7 @@ export class App {
   /** Boots: shows the bookmark list if a sync is already enabled, else the login. */
   async start(share?: SharedUrl): Promise<void> {
     this.pendingShare = share;
+    this.watchForeground();
     await this.loadUrlPolicy();
     const status = await this.engine.getStatus();
     this.root.removeAttribute('aria-busy');
@@ -309,6 +327,45 @@ export class App {
    * a second time.
    */
   private async syncOnOpen(): Promise<void> {
+    await this.autoSync();
+  }
+
+  /**
+   * Syncs again whenever the app comes back to the foreground.
+   *
+   * Registered once, for the life of the page, rather than per render: the listener
+   * outlives a logout, and {@link autoSync} is the one that decides whether there is
+   * anything to sync against.
+   *
+   * `visibilitychange` is the event a suspended PWA actually gets back on: `focus` misses
+   * a resume that restores the app without focusing a control, and `pageshow` only fires
+   * for a full load or a back/forward restore.
+   */
+  private watchForeground(): void {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        void this.autoSync();
+      }
+    });
+  }
+
+  /**
+   * A sync nobody asked for: on open, and on every return to the foreground.
+   *
+   * Three things keep it from being a nuisance. It does nothing while the list is not on
+   * screen, which is how it stays out of the login form's way and stops after a logout.
+   * It does nothing while another sync is in flight, so a resume during a slow one does
+   * not queue a second. And it keeps {@link AUTO_SYNC_MIN_INTERVAL_MS} away from the
+   * previous sync, manual ones included, so flicking between two tabs is not a stream of
+   * requests.
+   */
+  private async autoSync(): Promise<void> {
+    if (!this.listEl || this.syncing) {
+      return;
+    }
+    if (Date.now() - this.lastSyncAt < AUTO_SYNC_MIN_INTERVAL_MS) {
+      return;
+    }
     await this.doSync({ silent: true });
   }
 
@@ -394,6 +451,7 @@ export class App {
     // in. The pending debounce is cancelled for the same reason.
     this.addMsgEl = undefined;
     this.addFields = undefined;
+    this.statusEl = undefined;
     this.syncBtn = undefined;
     if (this.suggestTimer !== undefined) {
       clearTimeout(this.suggestTimer);
@@ -481,6 +539,7 @@ export class App {
     if (this.listEl) this.captureExpansion(this.listEl);
     this.clear();
     const status = el('span', { class: 'status', 'data-testid': 'syncStatus' }, `${this.bookmarks.length} bookmarks`);
+    this.statusEl = status;
     const syncBtn = el('button', { class: 'secondary', 'data-testid': 'syncButton' }, 'Sync');
     const logoutBtn = el('button', { class: 'secondary', 'data-testid': 'logoutButton' }, 'Log out');
     this.syncBtn = syncBtn;
@@ -635,6 +694,9 @@ export class App {
     await this.loadBookmarks();
     if (this.listEl && this.countEl) {
       this.renderResults(this.listEl, this.countEl);
+      if (this.statusEl) {
+        this.statusEl.textContent = `${this.bookmarks.length} bookmarks`;
+      }
     } else {
       this.renderList();
     }
@@ -877,28 +939,37 @@ export class App {
    */
   private async doSync({ silent = false }: { silent?: boolean } = {}): Promise<void> {
     const btn = this.syncBtn;
+    this.syncing = true;
+    // Taken at the start, so a slow sync holds the automatic ones off for its own
+    // duration too rather than letting one fire the moment it finishes.
+    this.lastSyncAt = Date.now();
     if (btn) {
       btn.disabled = true;
       btn.textContent = 'Syncing…';
     }
     try {
-      await this.engine.sync();
-      // Rebuilds the header, so the button comes back with it.
-      await this.loadAndRenderList();
-      return;
-    } catch (err) {
-      if (err instanceof SyncConflictError) {
+      try {
+        await this.engine.sync();
+      } catch (err) {
+        if (!(err instanceof SyncConflictError)) {
+          throw err;
+        }
         await this.engine.forcePull();
-        await this.loadAndRenderList();
-        return;
       }
+      // Only the results region: a sync must not take the add form out from under
+      // someone who is filling it in, which is a real risk now that one can arrive on
+      // its own while the app sits in the foreground.
+      await this.refreshResults();
+    } catch (err) {
       if (!silent) {
         console.error(err);
       }
-    }
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = 'Sync';
+    } finally {
+      this.syncing = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Sync';
+      }
     }
   }
 
