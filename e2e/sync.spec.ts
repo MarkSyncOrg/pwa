@@ -13,7 +13,7 @@ import {
 
 // Fixed test credentials. The sync ID doubles as the PBKDF2 salt, so the seed
 // ciphertext below must be derived with exactly this pair.
-const SERVICE_URL = 'https://api.xbrowsersync.org';
+const SERVICE_URL = 'https://sync.marksync.org';
 const SYNC_ID = 'abc123def4567890abc123def4567890';
 const PASSWORD = 'correct horse battery staple';
 

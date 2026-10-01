@@ -313,5 +313,5 @@ caching rules live with the code rather than in the Cloudflare dashboard.
 
 ## Backend
 
-Defaults to `https://api.xbrowsersync.org`. Login uses an existing Sync ID +
+Defaults to `https://sync.marksync.org`. Login uses an existing Sync ID +
 password (creating a new sync is out of scope for this prototype).
