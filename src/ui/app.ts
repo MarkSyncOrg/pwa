@@ -23,7 +23,7 @@ import { readPageMetadata } from '../adapters/page-metadata';
 import { cycleTheme, getThemePreference, type ThemePreference } from './theme';
 import './styles.css';
 
-const DEFAULT_SERVICE_URL = 'https://api.xbrowsersync.org';
+const DEFAULT_SERVICE_URL = 'https://sync.marksync.org';
 
 /**
  * How long to wait after the last keystroke in the URL field before asking the page

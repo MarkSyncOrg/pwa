@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import pkg from './package.json';
 
-const API_ORIGIN = 'https://api.xbrowsersync.org';
+const API_ORIGINS = ['https://sync.marksync.org', 'https://api.xbrowsersync.org'];
 
 /**
  * Content-Security-Policy, as one list used two ways (see `securityHeaders` below).
@@ -153,7 +153,7 @@ export default defineConfig({
           {
             // xBrowserSync API: network-first so we get fresh data online, but fall
             // back to the last cached response when offline.
-            urlPattern: ({ url }) => url.origin === API_ORIGIN,
+            urlPattern: ({ url }) => API_ORIGINS.includes(url.origin),
             handler: 'NetworkFirst',
             options: {
               cacheName: 'marksync-api',
