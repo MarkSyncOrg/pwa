@@ -11,3 +11,20 @@ allowBuilds: {}
 # only stall a deploy behind our own publish.
 minimumReleaseAgeExclude:
   - '@marksyncorg/core@0.7.1'
+
+# glob 11.x carries GHSA-3g3m-2fjr-6pw4 (moderate: an aborted async walk keeps reading
+# directories; patched in 14.0.2) and, through its minimatch ^10 dependency,
+# GHSA-g3hv-75wg-m249 (moderate, globparts amplification DoS; patched in minimatch
+# 11.0.1). Both arrive via vite-plugin-pwa > workbox-build, which asks for glob ^11.0.1
+# in its latest release (7.4.1), so no bump reaches a fixed glob. The `@11` selector
+# moves only that line to 14.x, which brings minimatch 11 with it.
+#
+# workbox-build calls just `globSync(pattern, { cwd, follow, ignore })`, none of the
+# APIs glob 12-14 renamed or removed (the CLI, isRegExp/testRegExp, MatchRecord#entries,
+# the debug option). Checked by building with glob 11.1.0 and with 14.0.6: the generated
+# sw.js precaches the same 22 URLs with the same revision hashes.
+#
+# REMOVE once a workbox-build release depends on glob >= 14.0.2: delete this block and
+# re-run `pnpm audit`.
+overrides:
+  glob@11: ^14.0.2
